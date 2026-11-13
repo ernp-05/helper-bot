@@ -38,26 +38,32 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 
-def split_list_message(items, max_length=1990):
+def join_items(items, max_length=1990, sep="$", trailing_sep=True):
     messages = []
     current = []
     current_len = 0
 
     for item in items:
-        item_with_sep = item + '$'
-        item_len = len(item_with_sep)
+        piece = item + sep
+        piece_len = len(piece)
 
-        if current_len + item_len > max_length:
+        if current_len + piece_len > max_length:
             if current:
-                messages.append('$'.join(current) + '$')
+                chunk = sep.join(current)
+                if trailing_sep:
+                    chunk += sep
+                messages.append(chunk)
             current = [item]
-            current_len = item_len
+            current_len = piece_len
         else:
             current.append(item)
-            current_len += item_len
+            current_len += piece_len
 
     if current:
-        messages.append('$'.join(current) + '$')
+        chunk = sep.join(current)
+        if trailing_sep:
+            chunk += sep
+        messages.append(chunk)
 
     return messages
 
@@ -68,15 +74,28 @@ def strip_trailing_decorations(name):
     name = name.replace('**', '')
     name = name.replace('💞', '')
     name = name.strip()
+
+    name = re.sub(
+        r'\s*[0-9](?:[0-9.,]){2,4}\s*sp\s*$',
+        '',
+        name,
+        flags=re.IGNORECASE,
+    )
+
     cut = len(name)
-    for sep in (' | ', ' · '):
+    for sep in (' | ', ' · ', ' => ', '=>'):
         idx = name.find(sep)
         if idx != -1 and idx < cut:
             cut = idx
     name = name[:cut].strip()
+
     name = re.sub(r'<a?:[A-Za-z0-9_]+:\d+>', '', name)
-    name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935]', '', name)
+    name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935\u274c]', '', name)
     name = re.sub(r'[ \t]+', ' ', name).strip()
+
+    while name.startswith('$'):
+        name = name[1:].strip()
+
     return name
 
 
@@ -162,7 +181,7 @@ def apply_trim(items, trim):
     return items, None
 
 
-async def manage_list_action(source, trim=None, target_message=None):
+async def manage_list_action(source, trim=None, target_message=None, unsep=False, nolast=False):
     if isinstance(source, discord.Interaction):
         message = target_message
         ephemeral = True
@@ -230,7 +249,9 @@ async def manage_list_action(source, trim=None, target_message=None):
             await message.channel.send(error)
         return
 
-    msgs = split_list_message(items)
+    sep = "" if unsep else "$"
+    trailing_sep = not nolast
+    msgs = join_items(items, sep=sep, trailing_sep=trailing_sep)
 
     if isinstance(source, discord.Interaction):
         for m in msgs:
@@ -429,12 +450,19 @@ async def on_message(message: discord.Message):
         rest = content[3:].strip()
         parts = rest.split()
         trim = None
-        if parts:
-            if parts[0].lower() == 'trim' and len(parts) >= 2:
-                trim = parts[1]
-            elif parts[0].isdigit() or '-' in parts[0]:
-                trim = parts[0]
-        await manage_list_action(message, trim)
+        unsep = False
+        nolast = False
+        for p in parts:
+            pl = p.lower()
+            if pl == 'unsep':
+                unsep = True
+            elif pl == 'nolast':
+                nolast = True
+            elif pl == 'trim' and parts.index(p) + 1 < len(parts):
+                trim = parts[parts.index(p) + 1]
+            elif trim is None and (p.isdigit() or '-' in p):
+                trim = p
+        await manage_list_action(message, trim, unsep=unsep, nolast=nolast)
         return
     if content.lower() == '!json':
         await manage_json_action(message)
