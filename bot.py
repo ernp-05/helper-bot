@@ -22,7 +22,8 @@ def catch_all(path):
 
 
 def run_flask():
-    app.run(port=5000, use_reloader=False)
+    port = int(10000)
+    app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
 intents = discord.Intents.default()
