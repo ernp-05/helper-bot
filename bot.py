@@ -3,6 +3,7 @@ import asyncio
 import threading
 import json
 import io
+import re
 import discord
 from discord import app_commands
 from flask import Flask, redirect
@@ -61,6 +62,24 @@ def split_list_message(items, max_length=1990):
     return messages
 
 
+def strip_trailing_decorations(name):
+    if not name:
+        return ""
+    name = name.replace('**', '')
+    name = name.replace('💞', '')
+    name = name.strip()
+    cut = len(name)
+    for sep in (' | ', ' · '):
+        idx = name.find(sep)
+        if idx != -1 and idx < cut:
+            cut = idx
+    name = name[:cut].strip()
+    name = re.sub(r'<a?:[A-Za-z0-9_]+:\d+>', '', name)
+    name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935]', '', name)
+    name = re.sub(r'[ \t]+', ' ', name).strip()
+    return name
+
+
 def clean_asterisks(name):
     if not name:
         return name
@@ -80,39 +99,11 @@ def clean_asterisks(name):
 
 def clean_items_from_text(text):
     lines = text.split('\n')
-    cleaned_lines = []
-    for line in lines:
-        cleaned = line.strip()
-        cleaned = cleaned.replace('\u200b', '').replace('\ufeff', '').replace('\u200c', '').replace('\u200d', '')
-        cleaned_lines.append(cleaned)
-
-    while cleaned_lines and not cleaned_lines[-1]:
-        cleaned_lines.pop()
-
-    last_empty_index = -1
-    for i in range(len(cleaned_lines) - 1, -1, -1):
-        if not cleaned_lines[i]:
-            last_empty_index = i
-            break
-
-    if last_empty_index == -1:
-        items = []
-        for line in cleaned_lines:
-            if line:
-                line = line.replace('💞', '')
-                if line.strip():
-                    items.append(clean_asterisks(line.strip()))
-        return items
-
     items = []
-    for i in range(last_empty_index + 1, len(cleaned_lines)):
-        line = cleaned_lines[i]
-        if not line:
-            continue
-        line = line.replace('💞', '')
-        if not line.strip():
-            continue
-        items.append(clean_asterisks(line.strip()))
+    for line in lines:
+        cleaned = strip_trailing_decorations(line)
+        if cleaned:
+            items.append(cleaned)
     return items
 
 
@@ -141,17 +132,12 @@ def extract_names_from_embed(embed_dict):
     description = embed_dict.get('description') or ''
     names = []
     for line in description.split('\n'):
-        line = line.strip()
-        if not line:
+        cleaned = strip_trailing_decorations(line)
+        if not cleaned:
             continue
-        if line.startswith('**') and line.endswith('**') and len(line) > 4:
-            name = line[2:-2].strip()
-            if name:
-                names.append(name)
-        elif '<:' in line or '<a:' in line:
+        if cleaned.lower().startswith('total invested'):
             continue
-        else:
-            names.append(line)
+        names.append(cleaned)
     return names
 
 
@@ -217,16 +203,17 @@ async def manage_list_action(source, trim=None, target_message=None):
         if referenced.author.bot and referenced.embeds:
             for embed in referenced.embeds:
                 items.extend(extract_names_from_embed({'description': embed.description or ''}))
-            items = [clean_asterisks(i) for i in items]
         else:
             content = referenced.content or ''
             if content and '\n' in content:
                 items = clean_items_from_text(content)
             elif content.strip():
-                items = [clean_asterisks(content.strip())]
+                items = [strip_trailing_decorations(content.strip())]
             if not items:
                 items = extract_items_from_message(referenced)
-                items = [clean_asterisks(i) for i in items]
+                items = [strip_trailing_decorations(i) for i in items]
+
+    items = [i for i in items if i]
 
     if not items:
         if isinstance(source, discord.Interaction):
