@@ -39,6 +39,8 @@ tree = app_commands.CommandTree(client)
 
 
 def join_items(items, max_length=1990, sep="$", trailing_sep=True):
+    items = [i for i in items if i]
+
     messages = []
     current = []
     current_len = 0
@@ -73,7 +75,10 @@ def strip_trailing_decorations(name):
         return ""
     name = name.replace('**', '')
     name = name.replace('💞', '')
+    name = name.replace('\u200b', '').replace('\ufeff', '').replace('\u200c', '').replace('\u200d', '')
     name = name.strip()
+    if not name:
+        return ""
 
     name = re.sub(
         r'\s*[0-9](?:[0-9.,]){2,4}\s*sp\s*$',
@@ -83,7 +88,7 @@ def strip_trailing_decorations(name):
     )
 
     cut = len(name)
-    for sep in (' | ', ' · ', ' => ', '=>', '$wa', 'DISABLED', '🚫'):
+    for sep in (' | ', ' · ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
         idx = name.find(sep)
         if idx != -1 and idx < cut:
             cut = idx
