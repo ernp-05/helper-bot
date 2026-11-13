@@ -37,6 +37,30 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 
+def split_list_message(items, max_length=1990):
+    messages = []
+    current = []
+    current_len = 0
+
+    for item in items:
+        item_with_sep = item + '$'
+        item_len = len(item_with_sep)
+
+        if current_len + item_len > max_length:
+            if current:
+                messages.append('$'.join(current) + '$')
+            current = [item]
+            current_len = item_len
+        else:
+            current.append(item)
+            current_len += item_len
+
+    if current:
+        messages.append('$'.join(current) + '$')
+
+    return messages
+
+
 def clean_asterisks(name):
     if not name:
         return name
@@ -89,6 +113,27 @@ def clean_items_from_text(text):
         if not line.strip():
             continue
         items.append(clean_asterisks(line.strip()))
+    return items
+
+
+def extract_items_from_message(msg):
+    items = []
+
+    if msg.content:
+        lines = msg.content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line:
+                items.append(line)
+
+    for embed in msg.embeds:
+        if embed.description:
+            lines = embed.description.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line:
+                    items.append(line)
+
     return items
 
 
@@ -177,6 +222,9 @@ async def manage_list_action(source, trim=None, target_message=None):
                 items = clean_items_from_text(content)
             elif content.strip():
                 items = [clean_asterisks(content.strip())]
+            if not items:
+                items = extract_items_from_message(referenced)
+                items = [clean_asterisks(i) for i in items]
 
     if not items:
         if isinstance(source, discord.Interaction):
@@ -193,30 +241,20 @@ async def manage_list_action(source, trim=None, target_message=None):
             await message.channel.send(error)
         return
 
-    chunks = []
-    current = ""
-    for item in items:
-        piece = item if not current else "\n" + item
-        if len(current) + len(piece) > 1900:
-            chunks.append(current)
-            current = item
-        else:
-            current += piece
-    if current:
-        chunks.append(current)
+    msgs = split_list_message(items)
 
     if isinstance(source, discord.Interaction):
-        for chunk in chunks:
-            await source.followup.send(chunk, ephemeral=True)
+        for m in msgs:
+            await source.followup.send(m, ephemeral=True)
             await asyncio.sleep(1)
     else:
-        for chunk in chunks:
-            await message.channel.send(chunk)
+        for m in msgs:
+            await message.channel.send(m)
             await asyncio.sleep(1)
 
 
 def build_full_json(message):
-    return message._raw_data
+    return message.to_dict()
 
 
 async def manage_json_action(source, target_message=None):
@@ -244,7 +282,7 @@ async def manage_json_action(source, target_message=None):
         return
 
     data = build_full_json(referenced)
-    json_str = json.dumps(data, indent=2, ensure_ascii=False)
+    json_str = json.dumps(data, indent=2, ensure_ascii=False, default=str)
 
     if len(json_str) > 1900:
         buf = io.BytesIO(json_str.encode("utf-8"))
