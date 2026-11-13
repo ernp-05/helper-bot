@@ -176,11 +176,14 @@ def apply_trim(items, trim):
     return items, None
 
 
-async def manage_list_action(source, trim=None):
+async def manage_list_action(source, trim=None, target_message=None):
     if isinstance(source, discord.Interaction):
-        message = source.target
+        message = target_message
         ephemeral = True
         require_reply = False
+        if message is None:
+            await source.followup.send("❌ No target message.", ephemeral=True)
+            return
     else:
         message = source
         ephemeral = False
@@ -354,11 +357,14 @@ def build_full_json(message):
     return data
 
 
-async def manage_json_action(source):
+async def manage_json_action(source, target_message=None):
     if isinstance(source, discord.Interaction):
-        message = source.target
+        message = target_message
         ephemeral = True
         require_reply = False
+        if message is None:
+            await source.followup.send("❌ No target message.", ephemeral=True)
+            return
     else:
         message = source
         ephemeral = False
@@ -403,21 +409,25 @@ class TrimModal(discord.ui.Modal, title="List"):
         max_length=20,
     )
 
+    def __init__(self, message: discord.Message):
+        super().__init__()
+        self.message = message
+
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         trim = self.trim_input.value.strip() or None
-        await manage_list_action(interaction, trim)
+        await manage_list_action(interaction, trim, target_message=self.message)
 
 
 @tree.context_menu(name="List")
 async def list_context(interaction: discord.Interaction, message: discord.Message):
-    await interaction.response.send_modal(TrimModal())
+    await interaction.response.send_modal(TrimModal(message))
 
 
 @tree.context_menu(name="Json")
 async def json_context(interaction: discord.Interaction, message: discord.Message):
     await interaction.response.defer(ephemeral=True)
-    await manage_json_action(interaction)
+    await manage_json_action(interaction, target_message=message)
 
 
 @client.event
