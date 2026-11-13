@@ -83,7 +83,7 @@ def strip_trailing_decorations(name):
     )
 
     cut = len(name)
-    for sep in (' | ', ' · ', ' => ', '=>'):
+    for sep in (' | ', ' · ', ' => ', '=>', '$wa', 'DISABLED', '🚫'):
         idx = name.find(sep)
         if idx != -1 and idx < cut:
             cut = idx
@@ -91,6 +91,7 @@ def strip_trailing_decorations(name):
 
     name = re.sub(r'<a?:[A-Za-z0-9_]+:\d+>', '', name)
     name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935\u274c]', '', name)
+    name = name.replace('🚫', '')
     name = re.sub(r'[ \t]+', ' ', name).strip()
 
     while name.startswith('$'):
@@ -232,6 +233,7 @@ async def manage_list_action(source, trim=None, target_message=None, unsep=False
                 items = extract_items_from_message(referenced)
                 items = [strip_trailing_decorations(i) for i in items]
 
+    items = [strip_trailing_decorations(i) for i in items]
     items = [i for i in items if i]
 
     if not items:
