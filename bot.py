@@ -69,7 +69,6 @@ def join_items(items, max_length=1990, sep="$", trailing_sep=True):
 
     return messages
 
-
 def strip_trailing_decorations(name):
     if not name:
         return ""
@@ -88,9 +87,10 @@ def strip_trailing_decorations(name):
     name = re.sub(r'\s*\(\s*#?\s*[0-9A-Fa-f]{6}\s*\)\s*$', '', name)
     name = re.sub(r'\s*#\s*[0-9A-Fa-f]{6}\s*$', '', name)
     name = re.sub(r'\s*\(\s*Soulkeys:\s*[\d.,]+\s*\)\s*$', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s*\(\s*\d+\s*tags?\s*\)\s*$', '', name, flags=re.IGNORECASE)
 
     cut = len(name)
-    for sep in (' | ', ' · ', ' - ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
+    for sep in (' | ', ' · ', ' - ', ' . ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
         idx = name.find(sep)
         if idx != -1 and idx < cut:
             cut = idx
@@ -105,7 +105,6 @@ def strip_trailing_decorations(name):
         name = name[1:].strip()
 
     return name
-
 
 def clean_asterisks(name):
     if not name:
