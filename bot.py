@@ -83,11 +83,14 @@ def strip_trailing_decorations(name):
     name = re.sub(r'^#\d+(?:\.\d+)?\s*-\s*', '', name)
 
     name = re.sub(
-        r'\s*[0-9](?:[0-9.,]){2,4}\s*sp\s*$',
+        r'\s*\d[\d.,]{2,}\s*sp\s*$',
         '',
         name,
         flags=re.IGNORECASE,
     )
+
+    name = re.sub(r'\s*\(\s*#?\s*[0-9A-Fa-f]{6}\s*\)\s*$', '', name)
+    name = re.sub(r'\s*#\s*[0-9A-Fa-f]{6}\s*$', '', name)
 
     cut = len(name)
     for sep in (' | ', ' · ', ' - ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
