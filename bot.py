@@ -81,8 +81,13 @@ def strip_trailing_decorations(name):
 
     name = re.sub(r'^#\d+(?:\.\d+)?\s*-\s*', '', name)
 
+    name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935\u274c]', '', name)
+    name = name.replace('🚫', '')
+    name = re.sub(r'\s*\+\d+%', '', name)
+    name = re.sub(r'[ \t]+', ' ', name).strip()
+
     cut = len(name)
-    for sep in (' | ', ' · ', ' - ', ' . ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
+    for sep in (' | ', ' · ', ' - ', ' . ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED'):
         idx = name.find(sep)
         if idx != -1 and idx < cut:
             cut = idx
@@ -98,10 +103,7 @@ def strip_trailing_decorations(name):
         name = re.sub(r'\s*\(\s*\d+\s*tags?\s*\)\s*$', '', name, flags=re.IGNORECASE)
 
     name = re.sub(r'<a?:[A-Za-z0-9_]+:\d+>', '', name)
-    name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935\u274c]', '', name)
-    name = name.replace('🚫', '')
     name = re.sub(r'[ \t]+', ' ', name).strip()
-
     name = name.rstrip(' .')
 
     while name.startswith('$'):
