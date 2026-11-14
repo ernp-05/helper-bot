@@ -155,9 +155,23 @@ def extract_items_from_message(msg):
 
 def extract_names_from_embed(embed_dict):
     description = embed_dict.get('description') or ''
+    lines = description.split('\n')
+
+    if not any(m in description for m in ['*Chars without a main series in this bundle:*', '*Persos sans série principale dans ce bundle :*', '*Pers. sem série principal neste pacote:*', '*Pers. sin serie principal en este paquete:*']):
+        start = 0
+        for i, line in enumerate(lines):
+            if line.strip() == '':
+                start = i + 1
+        lines = lines[start:]
+
     names = []
-    for line in description.split('\n'):
-        cleaned = strip_trailing_decorations(line)
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        if raw.startswith('*') and raw.endswith('*') and len(raw) > 1:
+            continue
+        cleaned = strip_trailing_decorations(raw)
         if not cleaned:
             continue
         if cleaned.lower().startswith('total invested'):
