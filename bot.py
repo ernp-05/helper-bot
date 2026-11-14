@@ -284,7 +284,7 @@ class CreateList:
                 await self.manage_list_action(interaction, trim, target_message=modal_self.message)
 
         @self.tree.context_menu(name="List")
-        async def list_context(interaction, message):
+        async def list_context(interaction: discord.Interaction, message: discord.Message):
             await interaction.response.send_modal(TrimModal(message))
 
         return list_context
