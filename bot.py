@@ -101,6 +101,8 @@ def strip_trailing_decorations(name):
     name = name.replace('🚫', '')
     name = re.sub(r'[ \t]+', ' ', name).strip()
 
+    name = name.rstrip(' .')
+
     while name.startswith('$'):
         name = name[1:].strip()
 
