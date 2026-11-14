@@ -51,10 +51,12 @@ class CreateList:
             return ""
         name = name.replace('**', '')
         name = name.replace('💞', '')
+        name = name.replace('\\~', '~')
         name = name.replace('\u200b', '').replace('\ufeff', '').replace('\u200c', '').replace('\u200d', '')
         name = name.strip()
         if not name:
             return ""
+        name = re.sub(r'^\s*·\s*', '', name)
         name = re.sub(r'^#\d+(?:\.\d+)?\s*-\s*', '', name)
         name = re.sub(r'[\u2705\u2b50\u2b06\u2b07\u2b05\u27a1\u2934\u2935\u274c]', '', name)
         name = name.replace('🚫', '')
@@ -74,6 +76,7 @@ class CreateList:
             name = re.sub(r'\s*#\s*[0-9A-Fa-f]{6}\s*$', '', name)
             name = re.sub(r'\s*\(\s*Soulkeys:\s*[\d.,]+\s*\)\s*$', '', name, flags=re.IGNORECASE)
             name = re.sub(r'\s*\(\s*\d+\s*tags?\s*\)\s*$', '', name, flags=re.IGNORECASE)
+            name = re.sub(r'\s*\(\s*\d[\d.,]*\s*\)\s*$', '', name)
         name = re.sub(r'<a?:[A-Za-z0-9_]+:\d+>', '', name)
         name = re.sub(r'[ \t]+', ' ', name).strip()
         name = name.rstrip(' .')
@@ -130,12 +133,17 @@ class CreateList:
     def extract_names_from_embed(self, embed_dict):
         description = embed_dict.get('description') or ''
         lines = description.split('\n')
-        if not any(m in description for m in ['*Chars without a main series in this bundle:*', '*Persos sans série principale dans ce bundle :*', '*Pers. sem série principal neste pacote:*', '*Pers. sin serie principal en este paquete:*']):
+
+        has_subheaders = any(re.match(r'^\*\*.+ - \d+/\d+\*\*$', line.strip()) for line in lines)
+        has_bundle_list = any(re.match(r'^·\s*.+?\s*\(\*\*\d+\*\*\)$', line.strip()) for line in lines)
+
+        if not has_subheaders and not has_bundle_list:
             start = 0
             for i, line in enumerate(lines):
                 if line.strip() == '':
                     start = i + 1
             lines = lines[start:]
+
         names = []
         for line in lines:
             raw = line.strip()
@@ -144,6 +152,14 @@ class CreateList:
             if raw.startswith('*') and raw.endswith('*') and len(raw) > 1:
                 continue
             if raw.lower().startswith('avg:') or raw.lower().startswith('top 15 value:'):
+                continue
+            if re.match(r'^\*\*.+ - \d+/\d+\*\*$', raw):
+                continue
+            m = re.match(r'^·\s*(.+?)\s*\(\*\*\d+\*\*\)$', raw)
+            if m:
+                cleaned = self.strip_trailing_decorations(m.group(1))
+                if cleaned:
+                    names.append(cleaned)
                 continue
             cleaned = self.strip_trailing_decorations(raw)
             if not cleaned:
@@ -173,7 +189,73 @@ class CreateList:
             return items[:n], None
         return items, None
 
-    async def manage_list_action(self, source, trim=None, target_message=None, unsep=False, nolast=False, plus=False):
+    def parse_inline_list(self, content):
+        body = content
+        if body.lower().startswith('!l'):
+            body = body[2:]
+        if body.startswith(' '):
+            body = body[1:]
+
+        if not body:
+            return None, None, False, False, False
+
+        lines = body.split('\n')
+        first = lines[0]
+        rest = lines[1:]
+
+        trim = None
+        plus = False
+        unsep = False
+        nolast = False
+
+        tokens = first.split()
+        data_start = None
+
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            low = tok.lower()
+            if low == 'plus':
+                plus = True
+                i += 1
+            elif low == 'unsep':
+                unsep = True
+                i += 1
+            elif low == 'nolast':
+                nolast = True
+                i += 1
+            elif low == 'trim':
+                if i + 1 < len(tokens):
+                    val = tokens[i + 1]
+                    if re.match(r'^\d+$', val) or re.match(r'^\d+-\d+$', val):
+                        trim = val
+                        i += 2
+                    else:
+                        i += 1
+                else:
+                    i += 1
+            else:
+                data_start = i
+                break
+
+        raw_items = []
+        if data_start is not None:
+            raw_items.append(' '.join(tokens[data_start:]))
+        for line in rest:
+            raw_items.append(line)
+
+        items = []
+        for raw in raw_items:
+            if not raw:
+                continue
+            for piece in raw.split('\n'):
+                cleaned = self.strip_trailing_decorations(piece)
+                if cleaned:
+                    items.append(cleaned)
+
+        return items, trim, plus, unsep, nolast
+
+    async def manage_list_action(self, source, trim=None, target_message=None, unsep=False, nolast=False, plus=False, direct_items=None):
         if isinstance(source, discord.Interaction):
             message = target_message
             ephemeral = True
@@ -186,51 +268,54 @@ class CreateList:
             ephemeral = False
             require_reply = True
 
-        if require_reply and message.reference is None:
-            await message.channel.send("❌ Please reply to a message and use !l or the List app command.")
-            return
-
-        if require_reply:
-            try:
-                referenced = await message.channel.fetch_message(message.reference.message_id)
-            except Exception:
-                await message.channel.send("❌ Could not fetch the referenced message.")
+        if direct_items is not None:
+            items = direct_items
+        else:
+            if require_reply and message.reference is None:
+                await message.channel.send("❌ Please reply to a message and use !l or the List app command.")
                 return
-        else:
-            referenced = message
 
-        items = []
-
-        if referenced.attachments:
-            for att in referenced.attachments:
-                if att.filename.endswith('.txt') or (att.content_type or '').startswith('text/plain'):
-                    try:
-                        data = await att.read()
-                        text = data.decode('utf-8', errors='ignore')
-                        if self.is_bundle_list(text):
-                            items.extend(self.clean_bundle_list(text))
-                        else:
-                            items.extend(self.clean_items_from_text(text))
-                    except Exception:
-                        pass
-        else:
-            if referenced.author.bot and referenced.embeds:
-                for embed in referenced.embeds:
-                    items.extend(self.extract_names_from_embed({'description': embed.description or ''}))
+            if require_reply:
+                try:
+                    referenced = await message.channel.fetch_message(message.reference.message_id)
+                except Exception:
+                    await message.channel.send("❌ Could not fetch the referenced message.")
+                    return
             else:
-                content = referenced.content or ''
-                if self.is_bundle_list(content):
-                    items = self.clean_bundle_list(content)
-                elif content and '\n' in content:
-                    items = self.clean_items_from_text(content)
-                elif content.strip():
-                    items = [self.strip_trailing_decorations(content.strip())]
-                if not items:
-                    items = self.extract_items_from_message(referenced)
-                    items = [self.strip_trailing_decorations(i) for i in items]
+                referenced = message
 
-        items = [self.strip_trailing_decorations(i) for i in items]
-        items = [i for i in items if i]
+            items = []
+
+            if referenced.attachments:
+                for att in referenced.attachments:
+                    if att.filename.endswith('.txt') or (att.content_type or '').startswith('text/plain'):
+                        try:
+                            data = await att.read()
+                            text = data.decode('utf-8', errors='ignore')
+                            if self.is_bundle_list(text):
+                                items.extend(self.clean_bundle_list(text))
+                            else:
+                                items.extend(self.clean_items_from_text(text))
+                        except Exception:
+                            pass
+            else:
+                if referenced.author.bot and referenced.embeds:
+                    for embed in referenced.embeds:
+                        items.extend(self.extract_names_from_embed({'description': embed.description or ''}))
+                else:
+                    content = referenced.content or ''
+                    if self.is_bundle_list(content):
+                        items = self.clean_bundle_list(content)
+                    elif content and '\n' in content:
+                        items = self.clean_items_from_text(content)
+                    elif content.strip():
+                        items = [self.strip_trailing_decorations(content.strip())]
+                    if not items:
+                        items = self.extract_items_from_message(referenced)
+                        items = [self.strip_trailing_decorations(i) for i in items]
+
+            items = [self.strip_trailing_decorations(i) for i in items]
+            items = [i for i in items if i]
 
         if not items:
             if isinstance(source, discord.Interaction):
@@ -457,11 +542,13 @@ async def on_message(message: discord.Message):
     if message.author == client.user:
         return
     content = message.content.strip()
-    if content.lower() == '!l':
-        await create_list.manage_list_action(message)
+    if not content.lower().startswith('!l'):
+        if content.lower() == '!json':
+            await manage_json_action(message)
         return
-    if content.lower().startswith('!l '):
-        rest = content[3:].strip()
+
+    if message.reference is not None:
+        rest = content[2:].strip()
         parts = rest.split()
         trim = None
         unsep = False
@@ -481,8 +568,12 @@ async def on_message(message: discord.Message):
                 trim = p
         await create_list.manage_list_action(message, trim, unsep=unsep, nolast=nolast, plus=plus)
         return
-    if content.lower() == '!json':
-        await manage_json_action(message)
+
+    items, trim, plus, unsep, nolast = create_list.parse_inline_list(content)
+    if not items:
+        return
+
+    await create_list.manage_list_action(message, trim, unsep=unsep, nolast=nolast, plus=plus, direct_items=items)
 
 
 @client.event
