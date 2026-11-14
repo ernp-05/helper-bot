@@ -16,8 +16,9 @@ TOKEN = sys.argv[1]
 
 
 class CreateList:
-    def __init__(self, bot):
+    def __init__(self, bot, tree):
         self.bot = bot
+        self.tree = tree
 
     def join_items(self, items, max_length=1990, sep="$", trailing_sep=True):
         items = [i for i in items if i]
@@ -282,7 +283,7 @@ class CreateList:
                 trim = modal_self.trim_input.value.strip() or None
                 await self.manage_list_action(interaction, trim, target_message=modal_self.message)
 
-        @self.bot.tree.context_menu(name="List")
+        @self.tree.context_menu(name="List")
         async def list_context(interaction, message):
             await interaction.response.send_modal(TrimModal(message))
 
@@ -447,7 +448,7 @@ async def json_context(interaction: discord.Interaction, message: discord.Messag
     await manage_json_action(interaction, target_message=message)
 
 
-create_list = CreateList(client)
+create_list = CreateList(client, tree)
 create_list.create_list()
 
 
