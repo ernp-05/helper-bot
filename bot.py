@@ -80,6 +80,8 @@ def strip_trailing_decorations(name):
     if not name:
         return ""
 
+    name = re.sub(r'^#\d+(?:\.\d+)?\s*-\s*', '', name)
+
     name = re.sub(
         r'\s*[0-9](?:[0-9.,]){2,4}\s*sp\s*$',
         '',
@@ -88,7 +90,7 @@ def strip_trailing_decorations(name):
     )
 
     cut = len(name)
-    for sep in (' | ', ' · ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
+    for sep in (' | ', ' · ', ' - ', ' => ', '=>', '$wa', '$wg', '$hg', '$ha', 'DISABLED', '🚫'):
         idx = name.find(sep)
         if idx != -1 and idx < cut:
             cut = idx
@@ -170,6 +172,8 @@ def extract_names_from_embed(embed_dict):
         if not raw:
             continue
         if raw.startswith('*') and raw.endswith('*') and len(raw) > 1:
+            continue
+        if raw.lower().startswith('avg:') or raw.lower().startswith('top 15 value:'):
             continue
         cleaned = strip_trailing_decorations(raw)
         if not cleaned:
