@@ -1,4 +1,3 @@
-# minigames/hi_lo.py
 import asyncio
 import random
 import discord
@@ -149,6 +148,14 @@ class HiLoGame:
         self.bot_knows_all = random.random() < 0.0001
         self.bot_knows_next = random.random() < 0.02
         self.finished = False
+        self.ai_user_id = None
+        if ai is not None and opponent is not None:
+            if ai == 'first':
+                self.ai_user_id = player.id
+                self.turn = player.id
+            else:
+                self.ai_user_id = opponent.id
+                self.turn = player.id
 
     def current_card(self):
         if self.index < len(self.deck):
@@ -174,9 +181,7 @@ class HiLoGame:
             embed.set_image(url=url)
 
         if self.opponent is None:
-            lines = [f"♥️ = {self.lives}"]
-            if self.ai is not None:
-                lines.append(f"Points: {self.points[self.player.id]}")
+            lines = [f"♥️ = {self.lives}", f"Points: **{self.points[self.player.id]}**"]
             embed.description = "\n".join(lines)
         else:
             p1 = self.player.display_name
@@ -217,9 +222,6 @@ class HiLoGame:
         self.deck.extend(extra)
 
     async def start(self):
-        if self.ai is not None and self.ai == 'first':
-            await self._play_ai_first()
-            return
         await self._send_initial()
 
     async def _send_initial(self):
@@ -227,18 +229,12 @@ class HiLoGame:
         self.message = await self.channel.send(embed=embed, view=self.view, allowed_mentions=discord.AllowedMentions.none())
         await self._maybe_ai_turn()
 
-    async def _play_ai_first(self):
-        embed = self._display()
-        self.message = await self.channel.send(embed=embed, view=self.view, allowed_mentions=discord.AllowedMentions.none())
-        await asyncio.sleep(1)
-        await self._ai_move()
-
     async def handle_choice(self, interaction, choice):
         if self.finished:
             await interaction.response.send_message("❌ Game is over.", ephemeral=True)
             return
-        if self.ai is not None:
-            await interaction.response.send_message("❌ You're playing against the bot. Wait for its turn.", ephemeral=True)
+        if self.ai_user_id is not None and interaction.user.id != self.turn:
+            await interaction.response.send_message("❌ Not your turn.", ephemeral=True)
             return
         if self.opponent is not None and interaction.user.id not in (self.player.id, self.opponent.id):
             await interaction.response.send_message("❌ Not your game.", ephemeral=True)
@@ -303,13 +299,13 @@ class HiLoGame:
         except Exception:
             pass
 
-        if self.ai is not None:
+        if self.ai_user_id is not None:
             await self._maybe_ai_turn()
 
     async def _maybe_ai_turn(self):
-        if self.ai is None:
+        if self.ai_user_id is None:
             return
-        if self.ai == 'first':
+        if self.turn != self.ai_user_id:
             return
         await asyncio.sleep(1)
         await self._ai_move()
@@ -345,7 +341,7 @@ class HiLoGame:
                 else:
                     choice = random.choice(['higher', 'lower'])
 
-        await self._resolve(None, choice, self.player.id)
+        await self._resolve(None, choice, self.ai_user_id)
 
 
 class HiLoInviteView(ui.View):
@@ -427,8 +423,16 @@ class HiLoCommands:
             return True
 
         if target is not None and target.id == self.bot.user.id:
-            ai_first = random.random() < 0.5
-            game = HiLoGame(self.bot, message.channel, inviter, mode, lives, opponent=None, ai='first' if ai_first else 'second')
+            ai_starts = random.random() < 0.25
+            if ai_starts:
+                player = target
+                opponent = inviter
+                ai_side = 'first'
+            else:
+                player = inviter
+                opponent = target
+                ai_side = 'second'
+            game = HiLoGame(self.bot, message.channel, player, mode, lives, opponent=opponent, ai=ai_side)
             await game.start()
             return True
 
