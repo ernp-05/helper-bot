@@ -289,8 +289,12 @@ class TicTacToeCommands:
         target = message.mentions[0]
         inviter = message.author
 
-        if target.id == inviter.id:
+                if target.id == inviter.id:
             await message.add_reaction('❌')
+            return True
+
+        if target.bot and target.id != self.bot.user.id:
+            await message.channel.send("You can't cheat me with another bot!!!")
             return True
 
         if target.id == self.bot.user.id:
