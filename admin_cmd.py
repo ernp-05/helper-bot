@@ -50,6 +50,28 @@ class AdminCommands:
             return True
         return getattr(perms, perm_name, False)
 
+    def _can_act_on(self, actor, target, guild):
+        if guild is None or target is None or actor is None:
+            return False
+        if target.id == guild.owner_id:
+            return False
+        if target.id == self.bot.user.id:
+            return False
+        if target.id == actor.id:
+            return False
+        if not self._is_owner(guild, actor.id):
+            actor_top = actor.top_role.position if hasattr(actor, 'top_role') else -1
+            target_top = target.top_role.position if hasattr(target, 'top_role') else -1
+            if actor_top <= target_top:
+                return False
+        bot_member = guild.me
+        if bot_member is None:
+            return False
+        target_top = target.top_role.position if hasattr(target, 'top_role') else -1
+        if bot_member.top_role.position <= target_top:
+            return False
+        return True
+
     def _extract_ids(self, text):
         ids = []
         for m in re.findall(r'<#(\d+)>', text):
@@ -409,6 +431,8 @@ class AdminCommands:
                 return True
             ok_any = False
             for t in targets:
+                if not self._can_act_on(message.author, t, message.guild):
+                    continue
                 ok = await self._apply_kick(t, None)
                 if ok:
                     ok_any = True
@@ -428,6 +452,8 @@ class AdminCommands:
                 return True
             ok_any = False
             for t in targets:
+                if not self._can_act_on(message.author, t, message.guild):
+                    continue
                 ok = await self._apply_ban(t, None)
                 if ok:
                     ok_any = True
@@ -458,6 +484,8 @@ class AdminCommands:
                 return True
             ok_any = False
             for t in targets:
+                if not self._can_act_on(message.author, t, message.guild):
+                    continue
                 ok = await self._apply_mute(t, duration, None)
                 if ok:
                     ok_any = True
@@ -477,6 +505,8 @@ class AdminCommands:
                 return True
             ok_any = False
             for t in targets:
+                if not self._can_act_on(message.author, t, message.guild):
+                    continue
                 ok = await self._apply_unmute(t)
                 if ok:
                     ok_any = True
