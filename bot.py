@@ -7,6 +7,7 @@ from list_cmd import CreateList
 from json_cmd import JsonCommands
 from admin_cmd import AdminCommands
 from misc_cmd import MiscCommands
+from minigames.dice_game import DiceGame
 
 if len(sys.argv) < 2:
     print("Usage: python bot.py <TOKEN>")
@@ -43,6 +44,7 @@ create_list.create_list()
 json_cmd = JsonCommands(client, tree)
 admin_cmd = AdminCommands(client, tree)
 misc_cmd = MiscCommands(client, tree)
+dice_game = DiceGame(client, tree)
 
 
 @client.event
@@ -56,6 +58,8 @@ async def on_message(message: discord.Message):
     if await create_list.handle_message(message):
         return
     if await json_cmd.handle_message(message):
+        return
+    if await dice_game.handle_message(message):
         return
 
 
