@@ -129,3 +129,23 @@ async def manage_json_action(source, target_message=None):
             await source.followup.send(text, ephemeral=True)
         else:
             await message.channel.send(text)
+
+
+class JsonCommands:
+    def __init__(self, bot, tree):
+        self.bot = bot
+        self.tree = tree
+        self._setup()
+
+    def _setup(self):
+        @self.tree.context_menu(name="Json")
+        async def json_context(interaction: discord.Interaction, message: discord.Message):
+            await interaction.response.defer(ephemeral=True)
+            await manage_json_action(interaction, target_message=message)
+
+    async def handle_message(self, message):
+        content = message.content.strip()
+        if content.lower() != '!json':
+            return False
+        await manage_json_action(message)
+        return True
