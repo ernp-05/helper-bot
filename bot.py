@@ -1,11 +1,10 @@
 import sys
-import asyncio
 import threading
 import discord
 from discord import app_commands
 from flask import Flask, redirect
 from list_cmd import CreateList
-from json_cmd import manage_json_action
+from json_cmd import JsonCommands
 from admin_cmd import AdminCommands
 from misc_cmd import MiscCommands
 
@@ -38,16 +37,10 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-
-@tree.context_menu(name="Json")
-async def json_context(interaction: discord.Interaction, message: discord.Message):
-    await interaction.response.defer(ephemeral=True)
-    await manage_json_action(interaction, target_message=message)
-
-
 create_list = CreateList(client, tree)
 create_list.create_list()
 
+json_cmd = JsonCommands(client, tree)
 admin_cmd = AdminCommands(client, tree)
 misc_cmd = MiscCommands(client, tree)
 
@@ -56,46 +49,14 @@ misc_cmd = MiscCommands(client, tree)
 async def on_message(message: discord.Message):
     if message.author == client.user:
         return
-
     if await admin_cmd.handle_message(message):
         return
-
     if await misc_cmd.handle_message(message):
         return
-
-    content = message.content.strip()
-    if not content.lower().startswith('!l'):
-        if content.lower() == '!json':
-            await manage_json_action(message)
+    if await create_list.handle_message(message):
         return
-
-    if message.reference is not None:
-        rest = content[2:].strip()
-        parts = rest.split()
-        trim = None
-        unsep = False
-        nolast = False
-        plus = False
-        for p in parts:
-            pl = p.lower()
-            if pl == 'unsep':
-                unsep = True
-            elif pl == 'nolast':
-                nolast = True
-            elif pl == 'plus':
-                plus = True
-            elif pl == 'trim' and parts.index(p) + 1 < len(parts):
-                trim = parts[parts.index(p) + 1]
-            elif trim is None and (p.isdigit() or '-' in p):
-                trim = p
-        await create_list.manage_list_action(message, trim, unsep=unsep, nolast=nolast, plus=plus)
+    if await json_cmd.handle_message(message):
         return
-
-    items, trim, plus, unsep, nolast = create_list.parse_inline_list(content)
-    if not items:
-        return
-
-    await create_list.manage_list_action(message, trim, unsep=unsep, nolast=nolast, plus=plus, direct_items=items)
 
 
 @client.event
