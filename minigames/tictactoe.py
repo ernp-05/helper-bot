@@ -119,6 +119,9 @@ class TicTacToeView(ui.View):
             return False
         return True
 
+    async def on_timeout(self):
+        await self.game.on_timeout()
+
 
 class TicTacToeGame:
     def __init__(self, bot, channel, player_x, player_o, ai_side=None):
@@ -188,6 +191,22 @@ class TicTacToeGame:
         if self.ai_side == 'X':
             await asyncio.sleep(1)
             await self._ai_move()
+
+    async def on_timeout(self):
+        if has_winner(self.board, 'X') or has_winner(self.board, 'O') or is_full(self.board):
+            return
+        for child in self.view.children:
+            child.disabled = True
+        if self.message is None:
+            return
+        try:
+            await self.message.edit(
+                content=f"{self._display()}\n⌛ Game timed out.",
+                view=self.view,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+        except Exception:
+            pass
 
     async def handle_click(self, interaction, index):
         if self.board[index] != ' ':
@@ -277,19 +296,16 @@ class TicTacToeCommands:
             await message.add_reaction('❌')
             return True
 
-        parts = content.split()
-        if len(parts) < 2:
-            await message.channel.send("❌ Usage: `!ttt @user` (or mention the bot to play vs AI)")
-            return True
-
         if not message.mentions:
-            await message.channel.send("❌ Mention a user or the bot.")
+            await message.channel.send(
+                "❌ Usage: `!ttt @user` (or mention the bot to play vs AI)"
+            )
             return True
 
         target = message.mentions[0]
         inviter = message.author
 
-                if target.id == inviter.id:
+        if target.id == inviter.id:
             await message.add_reaction('❌')
             return True
 
