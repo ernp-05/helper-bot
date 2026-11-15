@@ -171,7 +171,7 @@ class CreateList:
     def apply_trim(self, items, trim):
         if trim is None:
             return items, None
-        if isinstance(trim, str) and '-' in trim:
+        if isinstance(trim, str) and '-' in trim and not trim.startswith('-'):
             try:
                 start, end = trim.split('-')
                 start = int(start.strip())
@@ -181,6 +181,11 @@ class CreateList:
                 return None, f"❌ Invalid range: {trim}. Valid range is 1-{len(items)}"
             except ValueError:
                 return None, f"❌ Invalid range format: {trim}. Use format like '5-7'"
+        elif isinstance(trim, str) and trim.startswith('-') and trim[1:].isdigit():
+            n = int(trim[1:])
+            if n <= 0:
+                return items, None
+            return items[-n:], None
         elif isinstance(trim, int) or (isinstance(trim, str) and trim.isdigit()):
             n = int(trim) if isinstance(trim, str) else trim
             if n < 0:
@@ -226,7 +231,7 @@ class CreateList:
             elif low == 'trim':
                 if i + 1 < len(tokens):
                     val = tokens[i + 1]
-                    if re.match(r'^\d+$', val) or re.match(r'^\d+-\d+$', val):
+                    if re.match(r'^\d+$', val) or re.match(r'^\d+-\d+$', val) or re.match(r'^-\d+$', val):
                         trim = val
                         i += 2
                     else:
@@ -352,7 +357,7 @@ class CreateList:
         class TrimModal(discord.ui.Modal, title="List"):
             trim_input = discord.ui.TextInput(
                 label="Trim (optional)",
-                placeholder="e.g. 5 or 5-7",
+                placeholder="e.g. 5, 5-7, or -2",
                 required=False,
                 max_length=20,
             )
@@ -371,3 +376,37 @@ class CreateList:
             await interaction.response.send_modal(TrimModal(message))
 
         return list_context
+
+    async def handle_message(self, message):
+        content = message.content.strip()
+        if not content.lower().startswith('!l'):
+            return False
+
+        if message.reference is not None:
+            rest = content[2:].strip()
+            parts = rest.split()
+            trim = None
+            unsep = False
+            nolast = False
+            plus = False
+            for p in parts:
+                pl = p.lower()
+                if pl == 'unsep':
+                    unsep = True
+                elif pl == 'nolast':
+                    nolast = True
+                elif pl == 'plus':
+                    plus = True
+                elif pl == 'trim' and parts.index(p) + 1 < len(parts):
+                    trim = parts[parts.index(p) + 1]
+                elif trim is None and (p.isdigit() or ('-' in p and not p.startswith('-')) or (p.startswith('-') and p[1:].isdigit())):
+                    trim = p
+            await self.manage_list_action(message, trim, unsep=unsep, nolast=nolast, plus=plus)
+            return True
+
+        items, trim, plus, unsep, nolast = self.parse_inline_list(content)
+        if not items:
+            return True
+
+        await self.manage_list_action(message, trim, unsep=unsep, nolast=nolast, plus=plus, direct_items=items)
+        return True
