@@ -57,43 +57,53 @@ def find_opponent_fork(board, player, opponent):
     return None
 
 
+def _minimax(board, player, ai, human, depth, alpha, beta):
+    if has_winner(board, ai):
+        return 10 - depth
+    if has_winner(board, human):
+        return depth - 10
+    if is_full(board):
+        return 0
+
+    if player == ai:
+        best = -float('inf')
+        for i in free_cells(board):
+            board[i] = ai
+            score = _minimax(board, human, ai, human, depth + 1, alpha, beta)
+            board[i] = ' '
+            best = max(best, score)
+            alpha = max(alpha, score)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        best = float('inf')
+        for i in free_cells(board):
+            board[i] = human
+            score = _minimax(board, ai, ai, human, depth + 1, alpha, beta)
+            board[i] = ' '
+            best = min(best, score)
+            beta = min(beta, score)
+            if beta <= alpha:
+                break
+        return best
+
+
 def choose_move(board, player, opponent):
     free = free_cells(board)
+    if len(free) == 9:
+        return random.choice([4, 0, 2, 6, 8])
 
-    move = find_winning_move(board, player)
-    if move is not None:
-        return move
-
-    move = find_winning_move(board, opponent)
-    if move is not None:
-        return move
-
-    move = find_fork(board, player)
-    if move is not None:
-        return move
-
-    move = find_opponent_fork(board, player, opponent)
-    if move is not None:
-        return move
-
-    if 4 in free:
-        return 4
-
-    corners = [0, 2, 6, 8]
-    opposite = {0: 8, 8: 0, 2: 6, 6: 2}
-    for corner in corners:
-        if board[corner] == opponent and opposite[corner] in free:
-            return opposite[corner]
-
-    for corner in corners:
-        if corner in free:
-            return corner
-
-    for side in [1, 3, 5, 7]:
-        if side in free:
-            return side
-
-    return free[0]
+    best_score = -float('inf')
+    best_move = None
+    for i in free:
+        board[i] = player
+        score = _minimax(board, opponent, player, opponent, 0, -float('inf'), float('inf'))
+        board[i] = ' '
+        if score > best_score:
+            best_score = score
+            best_move = i
+    return best_move
 
 
 class TicTacToeButton(ui.Button):
@@ -298,7 +308,9 @@ class TicTacToeCommands:
 
         if not message.mentions:
             await message.channel.send(
-                "❌ Usage: `!ttt @user` (or mention the bot to play vs AI)"
+                "❌ Usage: `!ttt @user` (or mention the bot to play vs AI)\n"
+                "Against the bot you can add `me` or `you` to decide who starts: "
+                "`!ttt @bot me` / `!ttt @bot you`"
             )
             return True
 
@@ -314,7 +326,19 @@ class TicTacToeCommands:
             return True
 
         if target.id == self.bot.user.id:
-            ai_side = random.choice(['X', 'O'])
+            parts = content.split()
+            starter = parts[2].lower() if len(parts) >= 3 else None
+
+            if starter == 'me':
+                ai_side = 'O'
+            elif starter == 'you':
+                ai_side = 'X'
+            elif starter is None:
+                ai_side = random.choice(['X', 'O'])
+            else:
+                await message.add_reaction('❌')
+                return True
+
             if ai_side == 'X':
                 player_x = target
                 player_o = inviter
@@ -336,7 +360,7 @@ class TicTacToeCommands:
         view = InviteView(inviter, target)
         invite_msg = await message.channel.send(
             f"❌ **{player_x.display_name}** vs ⭕ **{player_o.display_name}**\n"
-            f"{target.mention}, do you accept the Tic-Tac-Toe invite from {inviter.mention}?",
+            f"{target.mention}, do you accept play a Tic-Tac-Toe game with {inviter.mention}?",
             view=view,
             allowed_mentions=discord.AllowedMentions(users=[target, inviter])
         )
