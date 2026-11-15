@@ -6,6 +6,8 @@ from discord import app_commands
 from flask import Flask, redirect
 from list_cmd import CreateList
 from json_cmd import manage_json_action
+from admin_cmd import AdminCommands
+from misc_cmd import MiscCommands
 
 if len(sys.argv) < 2:
     print("Usage: python bot.py <TOKEN>")
@@ -46,11 +48,21 @@ async def json_context(interaction: discord.Interaction, message: discord.Messag
 create_list = CreateList(client, tree)
 create_list.create_list()
 
+admin_cmd = AdminCommands(client, tree)
+misc_cmd = MiscCommands(client, tree)
+
 
 @client.event
 async def on_message(message: discord.Message):
     if message.author == client.user:
         return
+
+    if await admin_cmd.handle_message(message):
+        return
+
+    if await misc_cmd.handle_message(message):
+        return
+
     content = message.content.strip()
     if not content.lower().startswith('!l'):
         if content.lower() == '!json':
