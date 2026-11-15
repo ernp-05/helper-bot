@@ -1,15 +1,90 @@
 import re
+import sys
+import json
 import asyncio
+import aiohttp
 import discord
 from discord import app_commands
 from datetime import timedelta
+
+TOKEN = sys.argv[1] if len(sys.argv) > 1 else None
+
+BLACKLIST_FILE = 'blacklist.json'
+BLACKLIST_LEVELS = ('low', 'high', 'mute', 'kick', 'ban')
+
+
+class BlacklistView(discord.ui.View):
+    def __init__(self, entries, page=0):
+        super().__init__(timeout=120)
+        self.entries = entries
+        self.page = page
+        self.per_page = 25
+
+    def build_embed(self):
+        total = len(self.entries)
+        max_page = max(0, (total - 1) // self.per_page) if total else 0
+        if self.page > max_page:
+            self.page = max_page
+        start = self.page * self.per_page
+        chunk = self.entries[start:start + self.per_page]
+        embed = discord.Embed(title="Blacklist", color=0x5865F2)
+        if chunk:
+            embed.description = "\n".join(f"`{w}` — **{lvl}**" for w, lvl in chunk)
+        else:
+            embed.description = "Empty."
+        embed.set_footer(text=f"Page {self.page + 1}/{max_page + 1} · Total: {total}")
+        return embed
+
+    def update_buttons(self):
+        total = len(self.entries)
+        max_page = max(0, (total - 1) // self.per_page) if total else 0
+        self.prev.disabled = self.page <= 0
+        self.next.disabled = self.page >= max_page
+
+    async def send_to(self, channel):
+        self.update_buttons()
+        await channel.send(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        total = len(self.entries)
+        max_page = max(0, (total - 1) // self.per_page) if total else 0
+        if self.page < max_page:
+            self.page += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
 class AdminCommands:
     def __init__(self, bot, tree):
         self.bot = bot
         self.tree = tree
+        self.blacklist = self._load_blacklist()
         self._setup_slash()
+
+    def _load_blacklist(self):
+        try:
+            with open(BLACKLIST_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {str(k).lower(): str(v) for k, v in data.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _save_blacklist(self):
+        try:
+            with open(BLACKLIST_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.blacklist, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _is_owner(self, guild, user_id):
         if guild is None:
@@ -41,6 +116,22 @@ class AdminCommands:
             return True
         perms = member.guild_permissions
         return perms.administrator or perms.manage_messages
+
+    def _can_manage_nicknames(self, member):
+        if member is None:
+            return False
+        if self._is_owner(member.guild, member.id):
+            return True
+        perms = member.guild_permissions
+        return perms.administrator or perms.manage_nicknames
+
+    def _can_create_invite(self, member):
+        if member is None:
+            return False
+        if self._is_owner(member.guild, member.id):
+            return True
+        perms = member.guild_permissions
+        return perms.administrator or perms.create_instant_invite
 
     def _bot_can(self, guild, perm_name):
         if guild is None or guild.me is None:
@@ -115,6 +206,67 @@ class AdminCommands:
             if isinstance(resolved, discord.Message):
                 return [resolved.author]
         return []
+
+    def _resolve_user(self, message):
+        if message.mentions:
+            return message.mentions[0]
+        if message.reference:
+            resolved = message.reference.resolved
+            if isinstance(resolved, discord.Message):
+                return resolved.author
+        ids = re.findall(r'(?<!<@!?)(?<!\d)(\d{15,20})(?!\d)', message.content)
+        if ids:
+            uid = int(ids[0])
+            member = message.guild.get_member(uid) if message.guild else None
+            if member is not None:
+                return member
+            return discord.Object(id=uid)
+        return message.author
+
+    def _highest_role_color(self, member):
+        if member is None or not hasattr(member, 'roles'):
+            return 0x5865F2
+        best = None
+        for role in member.roles:
+            if role.color and role.color.value != 0:
+                if best is None or role.position > best.position:
+                    best = role
+        if best is None:
+            return 0x5865F2
+        return best.color.value
+
+    def _member_type(self, guild, member):
+        if member is None:
+            return "None"
+        if guild is not None and guild.owner_id == member.id:
+            return "Owner"
+        perms = member.guild_permissions
+        if perms.administrator:
+            return "Admin"
+        if perms.manage_messages or perms.manage_channels or perms.kick_members or perms.ban_members:
+            return "Mod"
+        return "Member"
+
+    def _level_perm_required(self, level):
+        if level == 'mute':
+            return 'moderate_members'
+        if level == 'kick':
+            return 'kick_members'
+        if level == 'ban':
+            return 'ban_members'
+        return None
+
+    def _can_set_level(self, member, level):
+        if level in ('low', 'high'):
+            return self._can_manage_messages(member)
+        perm = self._level_perm_required(level)
+        if perm is None:
+            return False
+        if self._is_owner(member.guild, member.id):
+            return True
+        if member.guild_permissions.administrator:
+            return True
+        return getattr(member.guild_permissions, perm, False)
 
     async def _apply_lock(self, channel):
         try:
@@ -218,6 +370,223 @@ class AdminCommands:
         except Exception:
             return False
 
+    async def _apply_blacklist_action(self, message, level):
+        try:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            if level == 'mute':
+                try:
+                    await message.author.timeout(timedelta(hours=6), reason="Blacklist filter")
+                except Exception:
+                    pass
+            elif level == 'kick':
+                try:
+                    await message.author.kick(reason="Blacklist filter")
+                except Exception:
+                    pass
+            elif level == 'ban':
+                try:
+                    await message.author.ban(reason="Blacklist filter", delete_message_days=0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _check_blacklist(self, message):
+        if message.guild is None:
+            return None
+        if message.author.id == self.bot.user.id:
+            return None
+        if not message.content:
+            return None
+        content = message.content.lower()
+        author = message.author
+        can_bypass = False
+        if isinstance(author, discord.Member):
+            can_bypass = self._can_manage_messages(author)
+        for word, level in self.blacklist.items():
+            if word and word in content:
+                if level in ('low', 'mute', 'kick', 'ban') and can_bypass:
+                    return None
+                return level
+        return None
+
+    async def _send_userinfo(self, channel, user):
+        if isinstance(user, discord.Object):
+            fetched = await self.bot.fetch_user(user.id)
+            member = channel.guild.get_member(user.id) if channel.guild else None
+        else:
+            fetched = user
+            member = user if isinstance(user, discord.Member) else (channel.guild.get_member(user.id) if channel.guild else None)
+        color = self._highest_role_color(member)
+        embed = discord.Embed(title=f"User info: {fetched.name}", color=color)
+        embed.set_thumbnail(url=fetched.display_avatar.url if fetched.display_avatar else None)
+        embed.add_field(name="Global name", value=fetched.global_name or "None", inline=True)
+        embed.add_field(name="Username", value=fetched.name, inline=True)
+        if member is not None:
+            embed.add_field(name="Guild nickname", value=member.nick or "None", inline=True)
+            embed.add_field(name="Member type", value=self._member_type(channel.guild, member), inline=True)
+        else:
+            embed.add_field(name="Guild nickname", value="None", inline=True)
+            embed.add_field(name="Member type", value="None", inline=True)
+        embed.add_field(name="Account created", value=discord.utils.format_dt(fetched.created_at, style="R"), inline=True)
+        if member is not None and member.joined_at is not None:
+            embed.add_field(name="Joined server", value=discord.utils.format_dt(member.joined_at, style="R"), inline=True)
+        else:
+            embed.add_field(name="Joined server", value="None", inline=True)
+        embed.add_field(name="User ID", value=str(fetched.id), inline=False)
+        await channel.send(embed=embed)
+
+    def _invite_help_embed(self):
+        embed = discord.Embed(title="Invite help", color=0x5865F2)
+        embed.add_field(
+            name="Usage",
+            value="`!invite [expire=Xt] [uses=N] [temp=bool] [@role ...]`",
+            inline=False,
+        )
+        embed.add_field(
+            name="Parameters",
+            value=(
+                "• `expire=Xt` — duration (e.g. `expire=1d`, `expire=2h30m`). Default: `1d`. `0` = never expires.\n"
+                "• `uses=N` — max uses. Default: `0` (infinite).\n"
+                "• `temp=bool` — `true`/`false`. Default: `false`. Temporary invites kick members after 24h if no role is given.\n"
+                "• `@role ...` — optional roles to assign on join. Requires Manage Roles. Only roles below your highest role (owner can assign any)."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Examples",
+            value=(
+                "`!invite`\n"
+                "`!invite expire=0 uses=0`\n"
+                "`!invite expire=7d uses=50`\n"
+                "`!invite temp=true @Member`"
+            ),
+            inline=False,
+        )
+        return embed
+
+    async def _send_invite(self, message):
+        if not self._can_create_invite(message.author):
+            await message.add_reaction('❌')
+            return True
+        if not self._bot_can(message.guild, 'create_instant_invite'):
+            await message.add_reaction('❌')
+            return True
+        max_age = 86400
+        max_uses = 0
+        temporary = False
+        roles = []
+        rest = message.content[len('!invite'):].strip()
+        for tok in rest.split():
+            low = tok.lower()
+            if low.startswith('expire='):
+                raw = tok[len('expire='):]
+                if raw == '0':
+                    max_age = 0
+                else:
+                    d = self._parse_duration(raw)
+                    if d is None:
+                        await message.add_reaction('❌')
+                        return True
+                    max_age = int(d.total_seconds())
+            elif low.startswith('uses='):
+                val = tok[len('uses='):]
+                if not val.isdigit():
+                    await message.add_reaction('❌')
+                    return True
+                max_uses = int(val)
+            elif low.startswith('temp='):
+                val = tok[len('temp='):].lower()
+                if val in ('true', '1', 'yes'):
+                    temporary = True
+                elif val in ('false', '0', 'no'):
+                    temporary = False
+                else:
+                    await message.add_reaction('❌')
+                    return True
+        for role in message.role_mentions:
+            roles.append(role)
+        if roles:
+            if not self._is_owner(message.guild, message.author.id):
+                actor_top = message.author.top_role.position
+                for role in roles:
+                    if role.position >= actor_top:
+                        await message.add_reaction('❌')
+                        return True
+        payload = {
+            'max_age': max_age,
+            'max_uses': max_uses,
+            'temporary': temporary,
+            'unique': False,
+            'reason': f"Invite created by {message.author}",
+        }
+        if roles:
+            payload['role_ids'] = [str(r.id) for r in roles]
+        url = f"https://discord.com/api/v10/channels/{message.channel.id}/invites"
+        headers = {
+            'Authorization': f"Bot {TOKEN}",
+            'Content-Type': 'application/json',
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status in (200, 201):
+                        data = await resp.json()
+                        code = data.get('code')
+                        if code:
+                            await message.channel.send(f"https://discord.gg/{code}")
+                        else:
+                            await message.add_reaction('❌')
+                    else:
+                        await message.add_reaction('❌')
+        except Exception:
+            await message.add_reaction('❌')
+        return True
+
+    async def _handle_nick(self, message):
+        if not self._can_manage_nicknames(message.author):
+            await message.add_reaction('❌')
+            return True
+        if not self._bot_can(message.guild, 'manage_nicknames'):
+            await message.add_reaction('❌')
+            return True
+        rest = message.content[len('!nick'):].strip()
+        if not rest:
+            await message.add_reaction('❌')
+            return True
+        target = None
+        new_nick = rest
+        if message.mentions:
+            target = message.mentions[0]
+            for m in message.mentions:
+                new_nick = new_nick.replace(f'<@{m.id}>', '').replace(f'<@!{m.id}>', '')
+            new_nick = new_nick.strip()
+        else:
+            parts = rest.split(None, 1)
+            if parts and parts[0].isdigit() and len(parts[0]) >= 15:
+                candidate = message.guild.get_member(int(parts[0]))
+                if candidate is not None:
+                    target = candidate
+                    new_nick = parts[1].strip() if len(parts) > 1 else ''
+        if target is not None:
+            if not self._can_act_on(message.author, target, message.guild):
+                await message.add_reaction('❌')
+                return True
+        else:
+            target = message.author
+        if not new_nick:
+            await message.add_reaction('❌')
+            return True
+        try:
+            await target.edit(nick=new_nick)
+            await message.add_reaction('✅')
+        except Exception:
+            await message.add_reaction('❌')
+        return True
+
     def _setup_slash(self):
         @self.tree.command(name="slowmode", description="Set channel slowmode")
         @app_commands.describe(input="Slowmode in seconds (0-21600)")
@@ -243,6 +612,71 @@ class AdminCommands:
             return False
         content = message.content.strip()
         lower = content.lower()
+
+        bl_level = self._check_blacklist(message)
+        if bl_level is not None:
+            await self._apply_blacklist_action(message, bl_level)
+
+        if lower.startswith('!blacklist'):
+            if not self._can_manage_messages(message.author):
+                await message.add_reaction('❌')
+                return True
+            rest = content[len('!blacklist'):].strip()
+            if not rest:
+                entries = sorted(self.blacklist.items())
+                view = BlacklistView(entries)
+                await view.send_to(message.channel)
+                return True
+            parts = rest.split()
+            sub = parts[0].lower()
+            if sub == 'add':
+                if len(parts) < 2:
+                    await message.add_reaction('❌')
+                    return True
+                word = parts[1].lower()
+                level = parts[2].lower() if len(parts) >= 3 else 'low'
+                if level not in BLACKLIST_LEVELS:
+                    await message.add_reaction('❌')
+                    return True
+                if not self._can_set_level(message.author, level):
+                    await message.add_reaction('❌')
+                    return True
+                self.blacklist[word] = level
+                self._save_blacklist()
+                await message.add_reaction('✅')
+                return True
+            if sub in ('rem', 'remove', 'del', 'delete'):
+                if len(parts) < 2:
+                    await message.add_reaction('❌')
+                    return True
+                word = parts[1].lower()
+                if word in self.blacklist:
+                    del self.blacklist[word]
+                    self._save_blacklist()
+                    await message.add_reaction('✅')
+                else:
+                    await message.add_reaction('❌')
+                return True
+            await message.add_reaction('❌')
+            return True
+
+        if lower.startswith('!userinfo'):
+            user = self._resolve_user(message)
+            try:
+                await self._send_userinfo(message.channel, user)
+            except Exception:
+                await message.add_reaction('❌')
+            return True
+
+        if lower.startswith('!invite'):
+            rest = content[len('!invite'):].strip()
+            if rest.lower() in ('help', '?', '-h', '--help'):
+                await message.channel.send(embed=self._invite_help_embed())
+                return True
+            return await self._send_invite(message)
+
+        if lower.startswith('!nick'):
+            return await self._handle_nick(message)
 
         if lower.startswith('!slowmode'):
             rest = content[len('!slowmode'):].strip()
@@ -433,7 +867,7 @@ class AdminCommands:
             for t in targets:
                 if not self._can_act_on(message.author, t, message.guild):
                     continue
-                ok = await self._apply_kick(t, None)
+                ok = await self._apply_kick(t, f"Kicked by {message.author}")
                 if ok:
                     ok_any = True
             await message.add_reaction('✅' if ok_any else '❌')
@@ -454,7 +888,7 @@ class AdminCommands:
             for t in targets:
                 if not self._can_act_on(message.author, t, message.guild):
                     continue
-                ok = await self._apply_ban(t, None)
+                ok = await self._apply_ban(t, f"Banned by {message.author}")
                 if ok:
                     ok_any = True
             await message.add_reaction('✅' if ok_any else '❌')
@@ -486,7 +920,7 @@ class AdminCommands:
             for t in targets:
                 if not self._can_act_on(message.author, t, message.guild):
                     continue
-                ok = await self._apply_mute(t, duration, None)
+                ok = await self._apply_mute(t, duration, f"Muted by {message.author}")
                 if ok:
                     ok_any = True
             await message.add_reaction('✅' if ok_any else '❌')
@@ -527,7 +961,7 @@ class AdminCommands:
                 return True
             ok_any = False
             for uid in ids:
-                ok = await self._apply_unban(message.guild, int(uid), None)
+                ok = await self._apply_unban(message.guild, int(uid), f"Unbanned by {message.author}")
                 if ok:
                     ok_any = True
             await message.add_reaction('✅' if ok_any else '❌')
