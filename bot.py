@@ -9,6 +9,7 @@ from admin_cmd import AdminCommands
 from misc_cmd import MiscCommands
 from minigames.dice_game import DiceGame
 from minigames.tictactoe import TicTacToeCommands
+from minigames.hi_lo import HiLoCommands
 
 if len(sys.argv) < 2:
     print("Usage: python bot.py <TOKEN>")
@@ -47,6 +48,7 @@ admin_cmd = AdminCommands(client, tree)
 misc_cmd = MiscCommands(client, tree)
 dice_game = DiceGame(client, tree)
 ttt_cmd = TicTacToeCommands(client, tree)
+hilo_cmd = HiLoCommands(client, tree)
 
 
 @client.event
@@ -64,6 +66,8 @@ async def on_message(message: discord.Message):
     if await dice_game.handle_message(message):
         return
     if await ttt_cmd.handle_message(message):
+        return
+    if await hilo_cmd.handle_message(message):
         return
 
 
