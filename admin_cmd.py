@@ -243,11 +243,6 @@ class AdminCommands:
             return False
         return guild.owner_id == user_id
 
-    def _is_admin(self, member):
-        if member is None:
-            return False
-        return bool(member.guild_permissions.administrator)
-
     def _can_manage_channels(self, member):
         if member is None:
             return False
