@@ -103,6 +103,19 @@ class RoleButtonsView(discord.ui.View):
             self.add_item(DynamicRoleButton(role.id, role.name, style, emoji))
 
 
+class ImagePositionSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="thumbnail", value="thumbnail", description="Small image at the top-right corner"),
+            discord.SelectOption(label="image", value="image", description="Large image below the text"),
+            discord.SelectOption(label="none", value="none", description="No image"),
+        ]
+        super().__init__(placeholder="Image position", min_values=1, max_values=1, options=options, default_values=["thumbnail"])
+
+    async def callback(self, interaction: discord.Interaction):
+        pass
+
+
 class SendMsgModal(discord.ui.Modal):
     def __init__(self, color, channel, roles, button_style, button_emoji):
         super().__init__(title="Send message")
@@ -111,6 +124,12 @@ class SendMsgModal(discord.ui.Modal):
         self.roles = roles
         self.button_style = button_style
         self.button_emoji = button_emoji
+        self.text = discord.ui.TextInput(
+            label="Text",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
         self.image_url = discord.ui.TextInput(
             label="Image URL",
             style=discord.TextStyle.short,
@@ -118,26 +137,13 @@ class SendMsgModal(discord.ui.Modal):
             placeholder="https://...",
             max_length=512,
         )
-        self.image_position = discord.ui.TextInput(
-            label="Image position",
-            style=discord.TextStyle.short,
-            required=False,
-            placeholder="thumbnail / image / none",
-            default="thumbnail",
-            max_length=20,
-        )
-        self.text = discord.ui.TextInput(
-            label="Text",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=4000,
-        )
+        self.image_position = ImagePositionSelect()
         self.add_item(self.text)
         self.add_item(self.image_url)
         self.add_item(self.image_position)
 
     async def on_submit(self, interaction: discord.Interaction):
-        pos = (self.image_position.value or "thumbnail").strip().lower()
+        pos = self.image_position.values[0] if self.image_position.values else "thumbnail"
         if pos not in ("thumbnail", "image", "none"):
             pos = "thumbnail"
         embed = discord.Embed(description=str(self.text.value), color=self.color)
@@ -154,21 +160,6 @@ class SendMsgModal(discord.ui.Modal):
             await interaction.response.send_message("❌ Could not send message.", ephemeral=True)
             return
         await interaction.response.send_message("✅", ephemeral=True)
-
-
-class SendMsgView(discord.ui.View):
-    def __init__(self, color, channel, button_style, button_emoji):
-        super().__init__(timeout=120)
-        self.color = color
-        self.channel = channel
-        self.roles = []
-        self.button_style = button_style
-        self.button_emoji = button_emoji
-
-    @discord.ui.button(label="Write message", style=discord.ButtonStyle.primary)
-    async def write(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = SendMsgModal(self.color, self.channel, self.roles, self.button_style, self.button_emoji)
-        await interaction.response.send_modal(modal)
 
 
 class BlacklistView(discord.ui.View):
@@ -1240,13 +1231,8 @@ class AdminCommands:
                         await interaction.response.send_message(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
                         return
                     roles.append(role)
-            view = SendMsgView(parsed_color, target, style_value, emoji_value)
-            view.roles = roles
-            await interaction.response.send_message(
-                "Configure and send the message.",
-                view=view,
-                ephemeral=True,
-            )
+            modal = SendMsgModal(parsed_color, target, roles, style_value, emoji_value)
+            await interaction.response.send_modal(modal)
 
     def _slash_channels(self, interaction, channels_arg):
         if not channels_arg:
