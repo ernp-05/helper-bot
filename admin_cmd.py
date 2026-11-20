@@ -31,6 +31,16 @@ def _parse_hex_color(value):
     return int(v, 16)
 
 
+def _normalize(content):
+    if content is None:
+        return ''
+    s = content.strip()
+    if not s.startswith('!'):
+        return s
+    s = s[1:].lstrip()
+    return s.lower()
+
+
 class DynamicRoleButton(discord.ui.DynamicItem[discord.ui.Button], template=r'role_(?P<id>\d+)_(?P<style>primary|secondary|success|danger)(?:_(?P<emoji>.+))?'):
     def __init__(self, role_id: int, label: str = "Role", style: str = "primary", emoji: str = None):
         super().__init__(
@@ -304,8 +314,6 @@ class AdminCommands:
     def _can_act_on(self, actor, target, guild):
         if guild is None or target is None or actor is None:
             return False
-        if target.id == guild.owner_id:
-            return False
         if target.id == self.bot.user.id:
             return False
         if target.id == actor.id:
@@ -316,7 +324,7 @@ class AdminCommands:
                 target_top = target.top_role.position if hasattr(target, 'top_role') else -1
                 if actor_top <= target_top:
                     return False
-        bot_member = guild.me
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
         if bot_member is None:
             return False
         target_top = target.top_role.position if hasattr(target, 'top_role') else -1
@@ -632,7 +640,7 @@ class AdminCommands:
         )
         return embed
 
-    async def _send_invite(self, message):
+    async def _send_invite(self, message, rest):
         if not self._can_create_invite(message.author):
             await message.add_reaction('❌')
             return True
@@ -643,7 +651,6 @@ class AdminCommands:
         max_uses = 0
         temporary = False
         roles = []
-        rest = message.content[len('!invite'):].strip()
         for tok in rest.split():
             low = tok.lower()
             if low.startswith('expire='):
@@ -711,14 +718,13 @@ class AdminCommands:
             await message.add_reaction('❌')
         return True
 
-    async def _handle_nick(self, message):
+    async def _handle_nick(self, message, rest):
         if not self._can_manage_nicknames(message.author):
             await message.add_reaction('❌')
             return True
         if not self._bot_can(message.guild, 'manage_nicknames'):
             await message.add_reaction('❌')
             return True
-        rest = message.content[len('!nick'):].strip()
         if not rest:
             await message.add_reaction('❌')
             return True
@@ -736,19 +742,23 @@ class AdminCommands:
                 if candidate is not None:
                     target = candidate
                     new_nick = parts[1].strip() if len(parts) > 1 else ''
-        if target is not None and target.id != message.author.id:
-            if not self._can_act_on(message.author, target, message.guild):
-                await message.add_reaction('❌')
-                return True
-        elif target is None:
+        if target is None:
             target = message.author
         if not new_nick:
             await message.add_reaction('❌')
             return True
+        if target.id != message.author.id:
+            if not self._can_act_on(message.author, target, message.guild):
+                await message.add_reaction('❌')
+                return True
         try:
             await target.edit(nick=new_nick)
             await message.add_reaction('✅')
-        except Exception:
+        except discord.Forbidden as e:
+            print(f"NICK FORBIDDEN: {e}")
+            await message.add_reaction('❌')
+        except Exception as e:
+            print(f"NICK ERROR: {e}")
             await message.add_reaction('❌')
         return True
 
@@ -898,7 +908,7 @@ class AdminCommands:
                 return
             await interaction.response.defer(ephemeral=True)
             try:
-                await interaction.channel.purge(limit=amount)
+                await interaction.channel.purge(limit=amount, bulk=False)
                 await interaction.followup.send(f"✅ Deleted {amount}", ephemeral=True)
             except Exception:
                 await interaction.followup.send("❌", ephemeral=True)
@@ -1029,7 +1039,11 @@ class AdminCommands:
             try:
                 await target.edit(nick=nickname)
                 await interaction.followup.send("✅", ephemeral=True)
-            except Exception:
+            except discord.Forbidden as e:
+                print(f"NICK FORBIDDEN: {e}")
+                await interaction.followup.send("❌", ephemeral=True)
+            except Exception as e:
+                print(f"NICK ERROR: {e}")
                 await interaction.followup.send("❌", ephemeral=True)
 
         @tree.command(name="userinfo", description="Show user info")
@@ -1251,18 +1265,24 @@ class AdminCommands:
     async def handle_message(self, message):
         if message.guild is None:
             return False
-        content = message.content.strip()
-        lower = content.lower()
+        if not message.content:
+            return False
+        stripped = message.content.strip()
+        if not stripped.startswith('!'):
+            return False
+        normalized = _normalize(stripped)
+        if not normalized:
+            return False
 
         bl_level = self._check_blacklist(message)
         if bl_level is not None:
             await self._apply_blacklist_action(message, bl_level)
 
-        if lower.startswith('!blacklist'):
+        if normalized.startswith('blacklist'):
             if not self._can_manage_messages(message.author):
                 await message.add_reaction('❌')
                 return True
-            rest = content[len('!blacklist'):].strip()
+            rest = normalized[len('blacklist'):].strip()
             if not rest:
                 entries = sorted(self.blacklist.items())
                 view = BlacklistView(entries)
@@ -1301,7 +1321,7 @@ class AdminCommands:
             await message.add_reaction('❌')
             return True
 
-        if lower.startswith('!userinfo'):
+        if normalized.startswith('userinfo'):
             user = self._resolve_user(message)
             try:
                 await self._send_userinfo(message.channel, user)
@@ -1309,18 +1329,19 @@ class AdminCommands:
                 await message.add_reaction('❌')
             return True
 
-        if lower.startswith('!invite'):
-            rest = content[len('!invite'):].strip()
-            if rest.lower() in ('help', '?', '-h', '--help'):
+        if normalized.startswith('invite'):
+            rest = normalized[len('invite'):].strip()
+            if rest in ('help', '?', '-h', '--help'):
                 await message.channel.send(embed=self._invite_help_embed())
                 return True
-            return await self._send_invite(message)
+            return await self._send_invite(message, rest)
 
-        if lower.startswith('!nick'):
-            return await self._handle_nick(message)
+        if normalized.startswith('nick'):
+            rest = stripped[stripped.lower().index('nick') + 4:].strip()
+            return await self._handle_nick(message, rest)
 
-        if lower.startswith('!slowmode'):
-            rest = content[len('!slowmode'):].strip()
+        if normalized.startswith('slowmode'):
+            rest = normalized[len('slowmode'):].strip()
             if not rest or not rest.isdigit():
                 await message.add_reaction('❌')
                 return True
@@ -1339,19 +1360,19 @@ class AdminCommands:
             return True
 
         for cmd, action, emoji in (
-            ('!lockchannel', self._apply_lock, '🔒'),
-            ('!openchannel', self._apply_open, '🔓'),
-            ('!hidechannel', self._apply_hide, '🔒'),
-            ('!showchannel', self._apply_show, '🔓'),
+            ('lockchannel', self._apply_lock, '🔒'),
+            ('openchannel', self._apply_open, '🔓'),
+            ('hidechannel', self._apply_hide, '🔒'),
+            ('showchannel', self._apply_show, '🔓'),
         ):
-            if lower.startswith(cmd):
+            if normalized.startswith(cmd):
                 if not self._can_manage_channels(message.author):
                     await message.add_reaction('❌')
                     return True
                 if not self._bot_can(message.guild, 'manage_channels'):
                     await message.add_reaction('❌')
                     return True
-                rest = content[len(cmd):].strip()
+                rest = normalized[len(cmd):].strip()
                 ids = self._extract_ids(rest)
                 if ids:
                     channels = []
@@ -1372,14 +1393,14 @@ class AdminCommands:
                 await message.add_reaction(emoji if ok_any else '❌')
                 return True
 
-        if lower.startswith('!cloneset'):
+        if normalized.startswith('cloneset'):
             if not self._can_manage_channels(message.author):
                 await message.add_reaction('❌')
                 return True
             if not self._bot_can(message.guild, 'manage_channels'):
                 await message.add_reaction('❌')
                 return True
-            rest = content[len('!cloneset'):].strip()
+            rest = normalized[len('cloneset'):].strip()
             ids = self._extract_ids(rest)
             if len(ids) != 1:
                 await message.add_reaction('❌')
@@ -1392,8 +1413,8 @@ class AdminCommands:
             await message.add_reaction('✅' if ok else '❌')
             return True
 
-        if lower.startswith('!renamechannel'):
-            rest = content[len('!renamechannel'):].strip()
+        if normalized.startswith('renamechannel'):
+            rest = stripped[stripped.lower().index('renamechannel') + len('renamechannel'):].strip()
             if not rest:
                 await message.add_reaction('❌')
                 return True
@@ -1410,14 +1431,14 @@ class AdminCommands:
                 await message.add_reaction('❌')
             return True
 
-        if lower.startswith('!purge'):
+        if normalized.startswith('purge'):
             if not self._can_manage_messages(message.author):
                 await message.add_reaction('❌')
                 return True
             if not self._bot_can(message.guild, 'manage_messages'):
                 await message.add_reaction('❌')
                 return True
-            rest = content[len('!purge'):].strip()
+            rest = normalized[len('purge'):].strip()
             try:
                 if message.reference is not None:
                     target_id = message.reference.message_id
@@ -1431,25 +1452,7 @@ class AdminCommands:
                         pass
                     to_delete.append(message)
                     to_delete = [m for m in to_delete if not m.pinned]
-                    now = discord.utils.utcnow()
-                    bulk = [m for m in to_delete if (now - m.created_at).days < 14]
-                    old = [m for m in to_delete if m not in bulk]
-                    if 2 <= len(bulk) <= 100:
-                        try:
-                            await message.channel.delete_messages(bulk)
-                        except Exception:
-                            for m in bulk:
-                                try:
-                                    await m.delete()
-                                except Exception:
-                                    pass
-                    else:
-                        for m in bulk:
-                            try:
-                                await m.delete()
-                            except Exception:
-                                pass
-                    for m in old:
+                    for m in to_delete:
                         try:
                             await m.delete()
                         except Exception:
@@ -1463,7 +1466,7 @@ class AdminCommands:
                     if n < 1 or n > 100:
                         await message.add_reaction('❌')
                         return True
-                    await message.channel.purge(limit=n + 1)
+                    await message.channel.purge(limit=n + 1, bulk=False)
                     return True
             except Exception:
                 try:
@@ -1472,7 +1475,7 @@ class AdminCommands:
                     pass
                 return True
 
-        if lower.startswith('!pin'):
+        if normalized.startswith('pin'):
             if not self._can_manage_messages(message.author):
                 await message.add_reaction('❌')
                 return True
@@ -1493,7 +1496,7 @@ class AdminCommands:
                 await message.add_reaction('❌')
             return True
 
-        if lower.startswith('!kick'):
+        if normalized.startswith('kick'):
             if not self._can_moderate(message.author, 'kick_members'):
                 await message.add_reaction('❌')
                 return True
@@ -1514,7 +1517,7 @@ class AdminCommands:
             await message.add_reaction('✅' if ok_any else '❌')
             return True
 
-        if lower.startswith('!ban'):
+        if normalized.startswith('ban'):
             if not self._can_moderate(message.author, 'ban_members'):
                 await message.add_reaction('❌')
                 return True
@@ -1535,14 +1538,14 @@ class AdminCommands:
             await message.add_reaction('✅' if ok_any else '❌')
             return True
 
-        if lower.startswith('!mute'):
+        if normalized.startswith('mute'):
             if not self._can_moderate(message.author, 'moderate_members'):
                 await message.add_reaction('❌')
                 return True
             if not self._bot_can(message.guild, 'moderate_members'):
                 await message.add_reaction('❌')
                 return True
-            rest = content[len('!mute'):].strip()
+            rest = normalized[len('mute'):].strip()
             tokens = rest.split()
             duration = None
             for tok in tokens:
@@ -1567,7 +1570,7 @@ class AdminCommands:
             await message.add_reaction('✅' if ok_any else '❌')
             return True
 
-        if lower.startswith('!unmute'):
+        if normalized.startswith('unmute'):
             if not self._can_moderate(message.author, 'moderate_members'):
                 await message.add_reaction('❌')
                 return True
@@ -1588,14 +1591,14 @@ class AdminCommands:
             await message.add_reaction('✅' if ok_any else '❌')
             return True
 
-        if lower.startswith('!unban'):
+        if normalized.startswith('unban'):
             if not self._can_moderate(message.author, 'ban_members'):
                 await message.add_reaction('❌')
                 return True
             if not self._bot_can(message.guild, 'ban_members'):
                 await message.add_reaction('❌')
                 return True
-            rest = content[len('!unban'):].strip()
+            rest = normalized[len('unban'):].strip()
             ids = re.findall(r'\b(\d{15,20})\b', rest)
             if not ids:
                 await message.add_reaction('❌')
