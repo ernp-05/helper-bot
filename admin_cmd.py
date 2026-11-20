@@ -13,6 +13,126 @@ BLACKLIST_FILE = 'blacklist.json'
 BLACKLIST_LEVELS = ('low', 'high', 'mute', 'kick', 'ban')
 
 
+def _parse_hex_color(value):
+    if value is None:
+        return None
+    v = value.strip().lstrip('#').lower()
+    if len(v) != 6:
+        return None
+    if not re.fullmatch(r'[0-9a-f]{6}', v):
+        return None
+    return int(v, 16)
+
+
+class RoleButton(discord.ui.Button):
+    def __init__(self, role_id, label, emoji=None):
+        super().__init__(style=discord.ButtonStyle.primary, label=label, emoji=emoji, custom_id=f"role_{role_id}")
+        self.role_id = role_id
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("❌", ephemeral=True)
+            return
+        role = guild.get_role(self.role_id)
+        if role is None:
+            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+            return
+        me = guild.me
+        if me is None or (not me.guild_permissions.administrator and not me.guild_permissions.manage_roles):
+            await interaction.response.send_message("❌ I can't manage roles.", ephemeral=True)
+            return
+        if me.top_role.position <= role.position:
+            await interaction.response.send_message("❌ That role is above my highest role.", ephemeral=True)
+            return
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message("❌", ephemeral=True)
+            return
+        try:
+            if role in member.roles:
+                await member.remove_roles(role, reason="Role button")
+                await interaction.response.send_message(f"➖ Removed {role.mention}", ephemeral=True)
+            else:
+                await member.add_roles(role, reason="Role button")
+                await interaction.response.send_message(f"➕ Added {role.mention}", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to manage that role.", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌", ephemeral=True)
+
+
+class RoleButtonsView(discord.ui.View):
+    def __init__(self, roles):
+        super().__init__(timeout=None)
+        for role in roles[:25]:
+            self.add_item(RoleButton(role.id, role.name[:80]))
+
+
+class SendMsgModal(discord.ui.Modal):
+    def __init__(self, color, channel, roles):
+        super().__init__(title="Send message")
+        self.color = color
+        self.channel = channel
+        self.roles = roles
+        self.image_url = discord.ui.TextInput(
+            label="Image URL",
+            style=discord.TextStyle.short,
+            required=False,
+            placeholder="https://...",
+            max_length=512,
+        )
+        self.image_position = discord.ui.TextInput(
+            label="Image position",
+            style=discord.TextStyle.short,
+            required=False,
+            placeholder="thumbnail / image / none",
+            default="thumbnail",
+            max_length=20,
+        )
+        self.text = discord.ui.TextInput(
+            label="Text",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.text)
+        self.add_item(self.image_url)
+        self.add_item(self.image_position)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pos = (self.image_position.value or "thumbnail").strip().lower()
+        if pos not in ("thumbnail", "image", "none"):
+            pos = "thumbnail"
+        embed = discord.Embed(description=str(self.text.value), color=self.color)
+        img = str(self.image_url.value).strip() if self.image_url.value else ""
+        if img and pos != "none":
+            if pos == "image":
+                embed.set_image(url=img)
+            else:
+                embed.set_thumbnail(url=img)
+        view = RoleButtonsView(self.roles) if self.roles else None
+        try:
+            await self.channel.send(embed=embed, view=view)
+        except Exception:
+            await interaction.response.send_message("❌ Could not send message.", ephemeral=True)
+            return
+        await interaction.response.send_message("✅", ephemeral=True)
+
+
+class SendMsgView(discord.ui.View):
+    def __init__(self, color, channel):
+        super().__init__(timeout=120)
+        self.color = color
+        self.channel = channel
+        self.roles = []
+
+    @discord.ui.button(label="Write message", style=discord.ButtonStyle.primary)
+    async def write(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = SendMsgModal(self.color, self.channel, self.roles)
+        await interaction.response.send_modal(modal)
+
+
 class BlacklistView(discord.ui.View):
     def __init__(self, entries, page=0):
         super().__init__(timeout=120)
@@ -89,7 +209,13 @@ class AdminCommands:
     def _is_owner(self, guild, user_id):
         if guild is None:
             return False
-        return guild.owner_id == user_id
+        if guild.owner_id == user_id:
+            return True
+        if self.bot.owner_id is not None and self.bot.owner_id == user_id:
+            return True
+        if user_id in getattr(self.bot, 'owner_ids', set()):
+            return True
+        return False
 
     def _can_manage_channels(self, member):
         if member is None:
@@ -132,6 +258,14 @@ class AdminCommands:
             return True
         perms = member.guild_permissions
         return perms.administrator or perms.create_instant_invite
+
+    def _can_manage_roles(self, member):
+        if member is None:
+            return False
+        if self._is_owner(member.guild, member.id):
+            return True
+        perms = member.guild_permissions
+        return perms.administrator or perms.manage_roles
 
     def _bot_can(self, guild, perm_name):
         if guild is None or guild.me is None:
@@ -571,11 +705,11 @@ class AdminCommands:
                 if candidate is not None:
                     target = candidate
                     new_nick = parts[1].strip() if len(parts) > 1 else ''
-        if target is not None:
+        if target is not None and target.id != message.author.id:
             if not self._can_act_on(message.author, target, message.guild):
                 await message.add_reaction('❌')
                 return True
-        else:
+        elif target is None:
             target = message.author
         if not new_nick:
             await message.add_reaction('❌')
@@ -587,25 +721,487 @@ class AdminCommands:
             await message.add_reaction('❌')
         return True
 
+    def _slash_manage_channels(self):
+        return app_commands.check(lambda i: self._can_manage_channels(i.user))
+
+    def _slash_manage_messages(self):
+        return app_commands.check(lambda i: self._can_manage_messages(i.user))
+
+    def _slash_manage_nicknames(self):
+        return app_commands.check(lambda i: self._can_manage_nicknames(i.user))
+
+    def _slash_moderate(self, perm):
+        return app_commands.check(lambda i: self._can_moderate(i.user, perm))
+
+    async def _slash_denied(self, interaction, reason="❌ You don't have permission."):
+        if interaction.response.is_done():
+            await interaction.followup.send(reason, ephemeral=True)
+        else:
+            await interaction.response.send_message(reason, ephemeral=True)
+
     def _setup_slash(self):
-        @self.tree.command(name="slowmode", description="Set channel slowmode")
-        @app_commands.describe(input="Slowmode in seconds (0-21600)")
-        async def slash_slowmode(interaction: discord.Interaction, input: int):
-            await interaction.response.defer(ephemeral=True)
+        tree = self.tree
+
+        @tree.command(name="slowmode", description="Set channel slowmode")
+        @app_commands.describe(seconds="Slowmode in seconds (0-21600)", channel="Target channel (default: current)")
+        async def slash_slowmode(interaction: discord.Interaction, seconds: int, channel: discord.TextChannel = None):
             if not self._can_manage_channels(interaction.user):
-                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            target = channel or interaction.channel
+            if not self._bot_can(interaction.guild, 'manage_channels'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            if seconds < 0 or seconds > 21600:
+                await interaction.response.send_message("❌ Time must be between 0 and 21600 seconds.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_slowmode(target, seconds)
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="lockchannel", description="Lock channels")
+        @app_commands.describe(channels="Space-separated channel IDs (default: current)")
+        async def slash_lock(interaction: discord.Interaction, channels: str = None):
+            if not self._can_manage_channels(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
                 return
             if not self._bot_can(interaction.guild, 'manage_channels'):
-                await interaction.followup.send("❌ I don't have permission.", ephemeral=True)
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
                 return
-            if input < 0 or input > 21600:
-                await interaction.followup.send("❌ Time must be between 0 and 21600 seconds.", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            targets = self._slash_channels(interaction, channels) or [interaction.channel]
+            ok_any = False
+            for ch in targets:
+                if await self._apply_lock(ch):
+                    ok_any = True
+            await interaction.followup.send("🔒" if ok_any else "❌", ephemeral=True)
+
+        @tree.command(name="openchannel", description="Open channels")
+        @app_commands.describe(channels="Space-separated channel IDs (default: current)")
+        async def slash_open(interaction: discord.Interaction, channels: str = None):
+            if not self._can_manage_channels(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
                 return
-            ok = await self._apply_slowmode(interaction.channel, input)
-            if ok:
+            if not self._bot_can(interaction.guild, 'manage_channels'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            targets = self._slash_channels(interaction, channels) or [interaction.channel]
+            ok_any = False
+            for ch in targets:
+                if await self._apply_open(ch):
+                    ok_any = True
+            await interaction.followup.send("🔓" if ok_any else "❌", ephemeral=True)
+
+        @tree.command(name="hidechannel", description="Hide channels")
+        @app_commands.describe(channels="Space-separated channel IDs (default: current)")
+        async def slash_hide(interaction: discord.Interaction, channels: str = None):
+            if not self._can_manage_channels(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_channels'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            targets = self._slash_channels(interaction, channels) or [interaction.channel]
+            ok_any = False
+            for ch in targets:
+                if await self._apply_hide(ch):
+                    ok_any = True
+            await interaction.followup.send("🔒" if ok_any else "❌", ephemeral=True)
+
+        @tree.command(name="showchannel", description="Show channels")
+        @app_commands.describe(channels="Space-separated channel IDs (default: current)")
+        async def slash_show(interaction: discord.Interaction, channels: str = None):
+            if not self._can_manage_channels(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_channels'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            targets = self._slash_channels(interaction, channels) or [interaction.channel]
+            ok_any = False
+            for ch in targets:
+                if await self._apply_show(ch):
+                    ok_any = True
+            await interaction.followup.send("🔓" if ok_any else "❌", ephemeral=True)
+
+        @tree.command(name="cloneset", description="Copy overwrites from a channel to the current one")
+        @app_commands.describe(source_id="Source channel ID")
+        async def slash_cloneset(interaction: discord.Interaction, source_id: str):
+            if not self._can_manage_channels(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_channels'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            try:
+                src = interaction.guild.get_channel(int(source_id))
+            except Exception:
+                src = None
+            if src is None or not isinstance(src, discord.TextChannel):
+                await interaction.response.send_message("❌ Invalid source channel.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_clone(src, interaction.channel)
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="renamechannel", description="Rename the current channel")
+        @app_commands.describe(name="New name")
+        async def slash_rename(interaction: discord.Interaction, name: str):
+            if not self._can_manage_channels(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_channels'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await interaction.channel.edit(name=name)
                 await interaction.followup.send("✅", ephemeral=True)
-            else:
+            except Exception:
                 await interaction.followup.send("❌", ephemeral=True)
+
+        @tree.command(name="purge", description="Delete the last N messages")
+        @app_commands.describe(amount="Number of messages (1-100)")
+        async def slash_purge(interaction: discord.Interaction, amount: int):
+            if not self._can_manage_messages(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_messages'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            if amount < 1 or amount > 100:
+                await interaction.response.send_message("❌ Amount must be between 1 and 100.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await interaction.channel.purge(limit=amount)
+                await interaction.followup.send(f"✅ Deleted {amount}", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("❌", ephemeral=True)
+
+        @tree.command(name="pin", description="Pin or unpin the given message ID")
+        @app_commands.describe(message_id="Message ID")
+        async def slash_pin(interaction: discord.Interaction, message_id: str):
+            if not self._can_manage_messages(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_messages'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            try:
+                msg = await interaction.channel.fetch_message(int(message_id))
+                if msg.pinned:
+                    await msg.unpin()
+                else:
+                    await msg.pin()
+                await interaction.followup.send("✅", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("❌", ephemeral=True)
+
+        @tree.command(name="kick", description="Kick a member")
+        @app_commands.describe(member="Member to kick", reason="Reason")
+        async def slash_kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
+            if not self._can_moderate(interaction.user, 'kick_members'):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'kick_members'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            if not self._can_act_on(interaction.user, member, interaction.guild):
+                await interaction.response.send_message("❌ Can't act on that member.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_kick(member, reason or f"Kicked by {interaction.user}")
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="ban", description="Ban a member")
+        @app_commands.describe(member="Member to ban", reason="Reason")
+        async def slash_ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
+            if not self._can_moderate(interaction.user, 'ban_members'):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'ban_members'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            if not self._can_act_on(interaction.user, member, interaction.guild):
+                await interaction.response.send_message("❌ Can't act on that member.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_ban(member, reason or f"Banned by {interaction.user}")
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="mute", description="Timeout a member")
+        @app_commands.describe(member="Member to mute", duration="e.g. 10m, 1h, 1d", reason="Reason")
+        async def slash_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = None):
+            if not self._can_moderate(interaction.user, 'moderate_members'):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'moderate_members'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            d = self._parse_duration(duration)
+            if d is None:
+                await interaction.response.send_message("❌ Invalid duration.", ephemeral=True)
+                return
+            if not self._can_act_on(interaction.user, member, interaction.guild):
+                await interaction.response.send_message("❌ Can't act on that member.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_mute(member, d, reason or f"Muted by {interaction.user}")
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="unmute", description="Remove timeout from a member")
+        @app_commands.describe(member="Member to unmute")
+        async def slash_unmute(interaction: discord.Interaction, member: discord.Member):
+            if not self._can_moderate(interaction.user, 'moderate_members'):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'moderate_members'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_unmute(member)
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="unban", description="Unban a user")
+        @app_commands.describe(user_id="User ID to unban", reason="Reason")
+        async def slash_unban(interaction: discord.Interaction, user_id: str, reason: str = None):
+            if not self._can_moderate(interaction.user, 'ban_members'):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'ban_members'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            if not user_id.isdigit():
+                await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            ok = await self._apply_unban(interaction.guild, int(user_id), reason or f"Unbanned by {interaction.user}")
+            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+
+        @tree.command(name="nick", description="Change a member's nickname")
+        @app_commands.describe(member="Member (default: yourself)", nickname="New nickname")
+        async def slash_nick(interaction: discord.Interaction, nickname: str, member: discord.Member = None):
+            target = member or interaction.user
+            if target.id != interaction.user.id:
+                if not self._can_manage_nicknames(interaction.user):
+                    await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                    return
+                if not self._can_act_on(interaction.user, target, interaction.guild):
+                    await interaction.response.send_message("❌ Can't act on that member.", ephemeral=True)
+                    return
+            if not self._bot_can(interaction.guild, 'manage_nicknames'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await target.edit(nick=nickname)
+                await interaction.followup.send("✅", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("❌", ephemeral=True)
+
+        @tree.command(name="userinfo", description="Show user info")
+        @app_commands.describe(user="User (default: yourself)")
+        async def slash_userinfo(interaction: discord.Interaction, user: discord.User = None):
+            target = user or interaction.user
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await self._send_userinfo(interaction.channel, target)
+            except Exception:
+                await interaction.followup.send("❌", ephemeral=True)
+
+        @tree.command(name="invite", description="Create an invite")
+        @app_commands.describe(expire="e.g. 1d, 2h30m, or 0 for never", uses="Max uses, 0 = infinite", temporary="Temporary invite", role="Role to grant on join")
+        async def slash_invite(interaction: discord.Interaction, expire: str = None, uses: int = None, temporary: bool = None, role: discord.Role = None):
+            if not self._can_create_invite(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'create_instant_invite'):
+                await interaction.response.send_message("❌ I don't have permission.", ephemeral=True)
+                return
+            max_age = 86400
+            if expire is not None:
+                if expire == '0':
+                    max_age = 0
+                else:
+                    d = self._parse_duration(expire)
+                    if d is None:
+                        await interaction.response.send_message("❌ Invalid expire.", ephemeral=True)
+                        return
+                    max_age = int(d.total_seconds())
+            max_uses = 0 if uses is None else max(0, int(uses))
+            temp_flag = bool(temporary) if temporary is not None else False
+            roles = [role] if role is not None else []
+            if roles:
+                if not self._is_owner(interaction.guild, interaction.user.id):
+                    if interaction.user.top_role.position <= role.position:
+                        await interaction.response.send_message("❌ Role is not below your highest role.", ephemeral=True)
+                        return
+            payload = {
+                'max_age': max_age,
+                'max_uses': max_uses,
+                'temporary': temp_flag,
+                'unique': False,
+                'reason': f"Invite created by {interaction.user}",
+            }
+            if roles:
+                payload['role_ids'] = [str(r.id) for r in roles]
+            url = f"https://discord.com/api/v10/channels/{interaction.channel.id}/invites"
+            headers = {
+                'Authorization': f"Bot {TOKEN}",
+                'Content-Type': 'application/json',
+            }
+            await interaction.response.defer(ephemeral=True)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=payload) as resp:
+                        if resp.status in (200, 201):
+                            data = await resp.json()
+                            code = data.get('code')
+                            if code:
+                                await interaction.followup.send(f"https://discord.gg/{code}", ephemeral=True)
+                            else:
+                                await interaction.followup.send("❌", ephemeral=True)
+                        else:
+                            await interaction.followup.send("❌", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("❌", ephemeral=True)
+
+        @tree.command(name="blacklist", description="Manage the blacklist")
+        @app_commands.describe(action="list / add / remove", word="Word (for add/remove)", level="low / high / mute / kick / ban")
+        async def slash_blacklist(interaction: discord.Interaction, action: str = "list", word: str = None, level: str = None):
+            if not self._can_manage_messages(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            act = action.lower().strip()
+            if act in ("list", "show", ""):
+                entries = sorted(self.blacklist.items())
+                view = BlacklistView(entries)
+                if entries:
+                    view.update_buttons()
+                    await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=view.build_embed(), ephemeral=True)
+                return
+            if act == "add":
+                if not word:
+                    await interaction.response.send_message("❌ Missing word.", ephemeral=True)
+                    return
+                lvl = (level or "low").lower()
+                if lvl not in BLACKLIST_LEVELS:
+                    await interaction.response.send_message("❌ Invalid level.", ephemeral=True)
+                    return
+                if not self._can_set_level(interaction.user, lvl):
+                    await interaction.response.send_message("❌ You can't set that level.", ephemeral=True)
+                    return
+                self.blacklist[word.lower()] = lvl
+                self._save_blacklist()
+                await interaction.response.send_message(f"✅ `{word.lower()}` → **{lvl}**", ephemeral=True)
+                return
+            if act in ("remove", "rem", "del", "delete"):
+                if not word:
+                    await interaction.response.send_message("❌ Missing word.", ephemeral=True)
+                    return
+                if word.lower() in self.blacklist:
+                    del self.blacklist[word.lower()]
+                    self._save_blacklist()
+                    await interaction.response.send_message(f"✅ Removed `{word.lower()}`", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ Not found.", ephemeral=True)
+                return
+            await interaction.response.send_message("❌ Unknown action.", ephemeral=True)
+
+        @tree.command(name="sendmsg", description="Send a message as the bot")
+        @app_commands.describe(
+            color="Hex color (000000-FFFFFF, optional #)",
+            channel="Target channel ID (default: current)",
+            role_text="Space-separated button labels for role buttons",
+            role_id="Space-separated role IDs matching role_text",
+        )
+        async def slash_sendmsg(
+            interaction: discord.Interaction,
+            color: str = "5865F2",
+            channel: str = None,
+            role_text: str = None,
+            role_id: str = None,
+        ):
+            if not self._can_manage_messages(interaction.user):
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+                return
+            parsed_color = _parse_hex_color(color)
+            if parsed_color is None:
+                await interaction.response.send_message("❌ Invalid color. Use 000000-FFFFFF.", ephemeral=True)
+                return
+            target = interaction.channel
+            if channel:
+                try:
+                    target = interaction.guild.get_channel(int(channel.strip()))
+                except Exception:
+                    target = None
+                if target is None or not isinstance(target, discord.TextChannel):
+                    await interaction.response.send_message("❌ Invalid channel ID.", ephemeral=True)
+                    return
+            roles = []
+            if role_text or role_id:
+                texts = role_text.split() if role_text else []
+                ids = role_id.split() if role_id else []
+                if len(texts) != len(ids):
+                    await interaction.response.send_message("❌ role_text and role_id must have the same number of items.", ephemeral=True)
+                    return
+                if len(texts) > 25:
+                    await interaction.response.send_message("❌ Maximum 25 roles.", ephemeral=True)
+                    return
+                if not self._can_manage_roles(interaction.user):
+                    await interaction.response.send_message("❌ You need Manage Roles to add role buttons.", ephemeral=True)
+                    return
+                if not self._bot_can(interaction.guild, 'manage_roles'):
+                    await interaction.response.send_message("❌ I need Manage Roles to add role buttons.", ephemeral=True)
+                    return
+                me = interaction.guild.me
+                for rid in ids:
+                    if not rid.isdigit():
+                        await interaction.response.send_message(f"❌ Invalid role ID: {rid}", ephemeral=True)
+                        return
+                    role = interaction.guild.get_role(int(rid))
+                    if role is None:
+                        await interaction.response.send_message(f"❌ Role not found: {rid}", ephemeral=True)
+                        return
+                    if not self._is_owner(interaction.guild, interaction.user.id):
+                        if interaction.user.top_role.position <= role.position:
+                            await interaction.response.send_message(f"❌ Role {role.name} is not below your highest role.", ephemeral=True)
+                            return
+                    if me is None or me.top_role.position <= role.position:
+                        await interaction.response.send_message(f"❌ Role {role.name} is above my highest role.", ephemeral=True)
+                        return
+                    if role.managed:
+                        await interaction.response.send_message(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
+                        return
+                    roles.append(role)
+            view = SendMsgView(parsed_color, target)
+            view.roles = roles
+            await interaction.response.send_message(
+                "Configure and send the message.",
+                view=view,
+                ephemeral=True,
+            )
+
+    def _slash_channels(self, interaction, channels_arg):
+        if not channels_arg:
+            return []
+        out = []
+        for tok in channels_arg.split():
+            try:
+                cid = int(tok.strip('<#>'))
+            except Exception:
+                continue
+            ch = interaction.guild.get_channel(cid)
+            if isinstance(ch, discord.TextChannel):
+                out.append(ch)
+        return out
 
     async def handle_message(self, message):
         if message.guild is None:
