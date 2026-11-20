@@ -238,74 +238,73 @@ class AdminCommands:
         except Exception:
             pass
 
-    def _is_owner(self, guild, user_id):
+    def _is_guild_owner(self, guild, user_id):
         if guild is None:
             return False
-        if guild.owner_id == user_id:
-            return True
-        if self.bot.owner_id is not None and self.bot.owner_id == user_id:
-            return True
-        if user_id in getattr(self.bot, 'owner_ids', set()):
-            return True
-        return False
+        return guild.owner_id == user_id
+
+    def _is_admin(self, member):
+        if member is None:
+            return False
+        return bool(member.guild_permissions.administrator)
 
     def _can_manage_channels(self, member):
         if member is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        perms = member.guild_permissions
-        return perms.administrator or perms.manage_channels
+        p = member.guild_permissions
+        return p.administrator or p.manage_channels
 
     def _can_moderate(self, member, perm_name):
         if member is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        perms = member.guild_permissions
-        if perms.administrator:
+        p = member.guild_permissions
+        if p.administrator:
             return True
-        return getattr(perms, perm_name, False)
+        return getattr(p, perm_name, False)
 
     def _can_manage_messages(self, member):
         if member is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        perms = member.guild_permissions
-        return perms.administrator or perms.manage_messages
+        p = member.guild_permissions
+        return p.administrator or p.manage_messages
 
     def _can_manage_nicknames(self, member):
         if member is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        perms = member.guild_permissions
-        return perms.administrator or perms.manage_nicknames
+        p = member.guild_permissions
+        return p.administrator or p.manage_nicknames
 
     def _can_create_invite(self, member):
         if member is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        perms = member.guild_permissions
-        return perms.administrator or perms.create_instant_invite
+        p = member.guild_permissions
+        return p.administrator or p.create_instant_invite
 
     def _can_manage_roles(self, member):
         if member is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        perms = member.guild_permissions
-        return perms.administrator or perms.manage_roles
+        p = member.guild_permissions
+        return p.administrator or p.manage_roles
 
     def _bot_can(self, guild, perm_name):
         if guild is None or guild.me is None:
             return False
-        perms = guild.me.guild_permissions
-        if perms.administrator:
+        p = guild.me.guild_permissions
+        if p.administrator:
             return True
-        return getattr(perms, perm_name, False)
+        return getattr(p, perm_name, False)
 
     def _can_act_on(self, actor, target, guild):
         if guild is None or target is None or actor is None:
@@ -316,11 +315,12 @@ class AdminCommands:
             return False
         if target.id == actor.id:
             return False
-        if not self._is_owner(guild, actor.id):
-            actor_top = actor.top_role.position if hasattr(actor, 'top_role') else -1
-            target_top = target.top_role.position if hasattr(target, 'top_role') else -1
-            if actor_top <= target_top:
-                return False
+        if not self._is_guild_owner(guild, actor.id):
+            if not actor.guild_permissions.administrator:
+                actor_top = actor.top_role.position if hasattr(actor, 'top_role') else -1
+                target_top = target.top_role.position if hasattr(target, 'top_role') else -1
+                if actor_top <= target_top:
+                    return False
         bot_member = guild.me
         if bot_member is None:
             return False
@@ -406,10 +406,10 @@ class AdminCommands:
             return "None"
         if guild is not None and guild.owner_id == member.id:
             return "Owner"
-        perms = member.guild_permissions
-        if perms.administrator:
+        p = member.guild_permissions
+        if p.administrator:
             return "Admin"
-        if perms.manage_messages or perms.manage_channels or perms.kick_members or perms.ban_members:
+        if p.manage_messages or p.manage_channels or p.kick_members or p.ban_members:
             return "Mod"
         return "Member"
 
@@ -423,16 +423,19 @@ class AdminCommands:
         return None
 
     def _can_set_level(self, member, level):
+        if member is None:
+            return False
         if level in ('low', 'high'):
             return self._can_manage_messages(member)
         perm = self._level_perm_required(level)
         if perm is None:
             return False
-        if self._is_owner(member.guild, member.id):
+        if self._is_guild_owner(member.guild, member.id):
             return True
-        if member.guild_permissions.administrator:
+        p = member.guild_permissions
+        if p.administrator:
             return True
-        return getattr(member.guild_permissions, perm, False)
+        return getattr(p, perm, False)
 
     async def _apply_lock(self, channel):
         try:
@@ -618,7 +621,7 @@ class AdminCommands:
                 "• `expire=Xt` — duration (e.g. `expire=1d`, `expire=2h30m`). Default: `1d`. `0` = never expires.\n"
                 "• `uses=N` — max uses. Default: `0` (infinite).\n"
                 "• `temp=bool` — `true`/`false`. Default: `false`. Temporary invites kick members after 24h if no role is given.\n"
-                "• `@role ...` — optional roles to assign on join. Requires Manage Roles. Only roles below your highest role (owner can assign any)."
+                "• `@role ...` — optional roles to assign on join. Requires Manage Roles. Only roles below your highest role."
             ),
             inline=False,
         )
@@ -676,12 +679,13 @@ class AdminCommands:
         for role in message.role_mentions:
             roles.append(role)
         if roles:
-            if not self._is_owner(message.guild, message.author.id):
-                actor_top = message.author.top_role.position
-                for role in roles:
-                    if role.position >= actor_top:
-                        await message.add_reaction('❌')
-                        return True
+            if not self._is_guild_owner(message.guild, message.author.id):
+                if not message.author.guild_permissions.administrator:
+                    actor_top = message.author.top_role.position
+                    for role in roles:
+                        if role.position >= actor_top:
+                            await message.add_reaction('❌')
+                            return True
         payload = {
             'max_age': max_age,
             'max_uses': max_uses,
@@ -1067,10 +1071,11 @@ class AdminCommands:
             temp_flag = bool(temporary) if temporary is not None else False
             roles = [role] if role is not None else []
             if roles:
-                if not self._is_owner(interaction.guild, interaction.user.id):
-                    if interaction.user.top_role.position <= role.position:
-                        await interaction.response.send_message("❌ Role is not below your highest role.", ephemeral=True)
-                        return
+                if not self._is_guild_owner(interaction.guild, interaction.user.id):
+                    if not interaction.user.guild_permissions.administrator:
+                        if interaction.user.top_role.position <= role.position:
+                            await interaction.response.send_message("❌ Role is not below your highest role.", ephemeral=True)
+                            return
             payload = {
                 'max_age': max_age,
                 'max_uses': max_uses,
@@ -1214,10 +1219,11 @@ class AdminCommands:
                     if role is None:
                         await interaction.response.send_message(f"❌ Role not found: {rid}", ephemeral=True)
                         return
-                    if not self._is_owner(interaction.guild, interaction.user.id):
-                        if interaction.user.top_role.position <= role.position:
-                            await interaction.response.send_message(f"❌ Role {role.name} is not below your highest role.", ephemeral=True)
-                            return
+                    if not self._is_guild_owner(interaction.guild, interaction.user.id):
+                        if not interaction.user.guild_permissions.administrator:
+                            if interaction.user.top_role.position <= role.position:
+                                await interaction.response.send_message(f"❌ Role {role.name} is not below your highest role.", ephemeral=True)
+                                return
                     if me is None or me.top_role.position <= role.position:
                         await interaction.response.send_message(f"❌ Role {role.name} is above my highest role.", ephemeral=True)
                         return
