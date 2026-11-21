@@ -38,11 +38,20 @@ class MiscCommands:
             return discord.Object(id=uid)
         return message.author
 
-    def _format_role_list(self, roles):
-        if not roles:
-            return "None"
-        ordered = sorted(roles, key=lambda r: r.position, reverse=True)
-        return ", ".join(r.mention for r in ordered)
+    def _chunk_text(self, text, limit=1900):
+        chunks = []
+        current = ""
+        for piece in text.split(", "):
+            add = piece if not current else ", " + piece
+            if len(current) + len(add) > limit:
+                if current:
+                    chunks.append(current)
+                current = piece
+            else:
+                current += add
+        if current:
+            chunks.append(current)
+        return chunks
 
     def _admin_roles(self, guild):
         return [r for r in guild.roles if r.permissions.ban_members and not r.is_default()]
@@ -61,7 +70,8 @@ class MiscCommands:
         if owner is None:
             try:
                 owner = await self.bot.fetch_user(guild.owner_id)
-            except Exception:
+            except Exception as e:
+                print(f"SERVERINFO OWNER FETCH ERROR: {e!r}")
                 owner = None
         owner_text = owner.mention if owner else f"ID {guild.owner_id}"
 
@@ -78,7 +88,10 @@ class MiscCommands:
 
         embed = discord.Embed(title=guild.name, color=0x5865F2)
         if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
+            try:
+                embed.set_thumbnail(url=guild.icon.url)
+            except Exception as e:
+                print(f"SERVERINFO ICON ERROR: {e!r}")
 
         first_lines = []
         if description:
@@ -103,12 +116,39 @@ class MiscCommands:
             name="Roles",
             value=(
                 f"Total Roles: {len(guild.roles)}\n"
-                f"⭐ Admin Roles: {self._format_role_list(admin_roles)}\n"
-                f"✳️ Mod Roles: {self._format_role_list(mod_roles)}"
+                f"⭐ Admin Roles: {len(admin_roles)}\n"
+                f"✳️ Mod Roles: {len(mod_roles)}"
             ),
             inline=False,
         )
-        return embed
+        return embed, admin_roles, mod_roles
+
+    async def _safe_send(self, channel, *args, **kwargs):
+        try:
+            return await channel.send(*args, **kwargs)
+        except discord.HTTPException as e:
+            print(f"SEND HTTP ERROR: {e!r}")
+            return None
+        except Exception as e:
+            print(f"SEND ERROR: {e!r}")
+            return None
+
+    async def _safe_error(self, message):
+        try:
+            await message.channel.send("❌", delete_after=3)
+        except Exception as e:
+            print(f"ERROR SEND FAILED: {e!r}")
+
+    async def _send_roles_extra(self, channel, admin_roles, mod_roles):
+        for label, roles in (("⭐ Admin Roles", admin_roles), ("✳️ Mod Roles", mod_roles)):
+            if not roles:
+                continue
+            ordered = sorted(roles, key=lambda r: r.position, reverse=True)
+            text = ", ".join(r.mention for r in ordered)
+            chunks = self._chunk_text(text)
+            for i, chunk in enumerate(chunks):
+                header = f"**{label}** ({len(roles)}):\n" if i == 0 else ""
+                await self._safe_send(channel, header + chunk)
 
     def _setup_slash(self):
         @self.tree.command(name="alea", description="Random number")
@@ -146,10 +186,23 @@ class MiscCommands:
                 await interaction.followup.send("❌ This command only works in a server.")
                 return
             try:
-                embed = await self._build_serverinfo_embed(interaction.guild)
+                embed, admin_roles, mod_roles = await self._build_serverinfo_embed(interaction.guild)
                 await interaction.followup.send(embed=embed)
-            except Exception:
-                await interaction.followup.send("❌")
+                for label, roles in (("⭐ Admin Roles", admin_roles), ("✳️ Mod Roles", mod_roles)):
+                    if not roles:
+                        continue
+                    ordered = sorted(roles, key=lambda r: r.position, reverse=True)
+                    text = ", ".join(r.mention for r in ordered)
+                    chunks = self._chunk_text(text)
+                    for i, chunk in enumerate(chunks):
+                        header = f"**{label}** ({len(roles)}):\n" if i == 0 else ""
+                        await interaction.followup.send(header + chunk)
+            except Exception as e:
+                print(f"SLASH SERVERINFO ERROR: {e!r}")
+                try:
+                    await interaction.followup.send("❌")
+                except Exception as e2:
+                    print(f"SLASH SERVERINFO FOLLOWUP ERROR: {e2!r}")
 
     async def handle_message(self, message):
         content = message.content.strip()
@@ -166,14 +219,15 @@ class MiscCommands:
                     avatar_url = user.display_avatar.url if user.display_avatar else None
                     name = user.display_name
                 if avatar_url is None:
-                    await message.add_reaction('❌')
+                    await self._safe_error(message)
                     return True
                 color = self._highest_role_color(user if isinstance(user, discord.Member) else None)
                 embed = discord.Embed(title=f"{name}'s avatar", color=color)
                 embed.set_image(url=avatar_url)
-                await message.channel.send(embed=embed)
-            except Exception:
-                await message.add_reaction('❌')
+                await self._safe_send(message.channel, embed=embed)
+            except Exception as e:
+                print(f"AVATAR ERROR: {e!r}")
+                await self._safe_error(message)
             return True
 
         if lower.startswith('!gavatar'):
@@ -188,14 +242,15 @@ class MiscCommands:
                     avatar_url = user.guild_avatar.url if getattr(user, 'guild_avatar', None) else (user.display_avatar.url if user.display_avatar else None)
                     name = user.display_name
                 if avatar_url is None:
-                    await message.add_reaction('❌')
+                    await self._safe_error(message)
                     return True
                 color = self._highest_role_color(user if isinstance(user, discord.Member) else None)
                 embed = discord.Embed(title=f"{name}'s server avatar", color=color)
                 embed.set_image(url=avatar_url)
-                await message.channel.send(embed=embed)
-            except Exception:
-                await message.add_reaction('❌')
+                await self._safe_send(message.channel, embed=embed)
+            except Exception as e:
+                print(f"GAVATAR ERROR: {e!r}")
+                await self._safe_error(message)
             return True
 
         if lower.startswith('!banner'):
@@ -209,14 +264,15 @@ class MiscCommands:
                     fetched = user
                 banner_url = fetched.banner.url if fetched.banner else None
                 if banner_url is None:
-                    await message.add_reaction('❌')
+                    await self._safe_error(message)
                     return True
                 color = self._highest_role_color(user if isinstance(user, discord.Member) else None)
                 embed = discord.Embed(title=f"{fetched.display_name}'s banner", color=color)
                 embed.set_image(url=banner_url)
-                await message.channel.send(embed=embed)
-            except Exception:
-                await message.add_reaction('❌')
+                await self._safe_send(message.channel, embed=embed)
+            except Exception as e:
+                print(f"BANNER ERROR: {e!r}")
+                await self._safe_error(message)
             return True
 
         if lower.startswith('!gbanner'):
@@ -230,14 +286,15 @@ class MiscCommands:
                     fetched = user
                 banner_url = fetched.banner.url if fetched.banner else None
                 if banner_url is None:
-                    await message.add_reaction('❌')
+                    await self._safe_error(message)
                     return True
                 color = self._highest_role_color(user if isinstance(user, discord.Member) else None)
                 embed = discord.Embed(title=f"{fetched.display_name}'s banner", color=color)
                 embed.set_image(url=banner_url)
-                await message.channel.send(embed=embed)
-            except Exception:
-                await message.add_reaction('❌')
+                await self._safe_send(message.channel, embed=embed)
+            except Exception as e:
+                print(f"GBANNER ERROR: {e!r}")
+                await self._safe_error(message)
             return True
 
         if lower.startswith('!alea'):
@@ -246,10 +303,10 @@ class MiscCommands:
             if m:
                 n = int(m.group(1))
                 if n < 1:
-                    await message.add_reaction('❌')
+                    await self._safe_error(message)
                     return True
                 x = random.randint(1, n)
-                await message.channel.send(f"{x}/{n}")
+                await self._safe_send(message.channel, f"{x}/{n}")
                 return True
             m = re.match(r'^(\d+)-(\d+)$', rest)
             if m:
@@ -258,12 +315,12 @@ class MiscCommands:
                 if a > b:
                     a, b = b, a
                 if a < 1:
-                    await message.add_reaction('❌')
+                    await self._safe_error(message)
                     return True
                 x = random.randint(a, b)
-                await message.channel.send(f"{x}/{a}-{b}")
+                await self._safe_send(message.channel, f"{x}/{a}-{b}")
                 return True
-            await message.add_reaction('❌')
+            await self._safe_error(message)
             return True
 
         if lower.startswith('!chose'):
@@ -272,21 +329,23 @@ class MiscCommands:
                 body = body[1:]
             lines = [l for l in body.split('\n') if l.strip()]
             if not lines:
-                await message.add_reaction('❌')
+                await self._safe_error(message)
                 return True
             pick = random.choice(lines).strip()
-            await message.channel.send(pick)
+            await self._safe_send(message.channel, pick)
             return True
 
         if lower.startswith('!serverinfo'):
             if message.guild is None:
-                await message.add_reaction('❌')
+                await self._safe_error(message)
                 return True
             try:
-                embed = await self._build_serverinfo_embed(message.guild)
-                await message.channel.send(embed=embed)
-            except Exception:
-                await message.add_reaction('❌')
+                embed, admin_roles, mod_roles = await self._build_serverinfo_embed(message.guild)
+                await self._safe_send(message.channel, embed=embed)
+                await self._send_roles_extra(message.channel, admin_roles, mod_roles)
+            except Exception as e:
+                print(f"SERVERINFO ERROR: {e!r}")
+                await self._safe_error(message)
             return True
 
         return False
