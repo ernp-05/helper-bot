@@ -93,6 +93,7 @@ class MiscCommands:
         first_lines.append(f"📆 Guild Creation: {created_fmt}")
 
         embed.add_field(
+            name="\u200b",
             value="\n".join(first_lines),
             inline=False,
         )
