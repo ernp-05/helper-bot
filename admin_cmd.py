@@ -75,7 +75,7 @@ class DynamicRoleButton(discord.ui.DynamicItem[discord.ui.Button], template=r'ro
         if guild is None:
             await interaction.response.send_message("❌", ephemeral=True)
             return
-        key = (guild.id, interaction.user.id)
+        key = (guild.id, interaction.user.id, self.role_id)
         now = time.time()
         reset_at = _ROLE_BUTTON_RESET.get(key)
         if reset_at is not None and now >= reset_at:
@@ -125,18 +125,18 @@ class DynamicRoleButton(discord.ui.DynamicItem[discord.ui.Button], template=r'ro
 
 
 class RoleButtonsView(discord.ui.View):
-    def __init__(self, roles, style="primary", emoji=None):
+    def __init__(self, role_labels, style="primary", emoji=None):
         super().__init__(timeout=None)
-        for role in roles[:25]:
-            self.add_item(DynamicRoleButton(role.id, role.name, style, emoji))
+        for role, label in role_labels[:25]:
+            self.add_item(DynamicRoleButton(role.id, label, style, emoji))
 
 
 class SendMsgModal(discord.ui.Modal):
-    def __init__(self, color, channel, roles, button_style, button_emoji, pic_url, pic_pos):
+    def __init__(self, color, channel, role_labels, button_style, button_emoji, pic_url, pic_pos):
         super().__init__(title="Send message")
         self.color = color
         self.channel = channel
-        self.roles = roles
+        self.role_labels = role_labels
         self.button_style = button_style
         self.button_emoji = button_emoji
         self.pic_url = pic_url
@@ -176,7 +176,7 @@ class SendMsgModal(discord.ui.Modal):
                 embed.set_image(url=self.pic_url)
             else:
                 embed.set_thumbnail(url=self.pic_url)
-        view = RoleButtonsView(self.roles, self.button_style, self.button_emoji) if self.roles else None
+        view = RoleButtonsView(self.role_labels, self.button_style, self.button_emoji) if self.role_labels else None
         try:
             await self.channel.send(embed=embed, view=view)
         except Exception:
@@ -1314,7 +1314,7 @@ class AdminCommands:
             if pos not in ("thumbnail", "image"):
                 await interaction.response.send_message("❌ pic_pos must be 'thumbnail' or 'image'.", ephemeral=True)
                 return
-            roles = []
+            role_labels = []
             if role_text or role_id:
                 texts = role_text.split() if role_text else []
                 ids = role_id.split() if role_id else []
@@ -1331,7 +1331,7 @@ class AdminCommands:
                     await interaction.response.send_message("❌ I need Manage Roles to add role buttons.", ephemeral=True)
                     return
                 me = interaction.guild.me
-                for rid in ids:
+                for rid, label in zip(ids, texts):
                     if not rid.isdigit():
                         await interaction.response.send_message(f"❌ Invalid role ID: {rid}", ephemeral=True)
                         return
@@ -1350,8 +1350,8 @@ class AdminCommands:
                     if role.managed:
                         await interaction.response.send_message(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
                         return
-                    roles.append(role)
-            modal = SendMsgModal(parsed_color, target, roles, style_value, emoji_value, pic_url, pos)
+                    role_labels.append((role, label))
+            modal = SendMsgModal(parsed_color, target, role_labels, style_value, emoji_value, pic_url, pos)
             await interaction.response.send_modal(modal)
 
     def _slash_channels(self, interaction, channels_arg):
