@@ -103,55 +103,51 @@ class RoleButtonsView(discord.ui.View):
             self.add_item(DynamicRoleButton(role.id, role.name, style, emoji))
 
 
-class ImagePositionSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="thumbnail", value="thumbnail", description="Small image at the top-right corner"),
-            discord.SelectOption(label="image", value="image", description="Large image below the text"),
-            discord.SelectOption(label="none", value="none", description="No image"),
-        ]
-        super().__init__(placeholder="Image position", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        pass
-
-
 class SendMsgModal(discord.ui.Modal):
-    def __init__(self, color, channel, roles, button_style, button_emoji, image_position="thumbnail"):
+    def __init__(self, color, channel, roles, button_style, button_emoji, pic_url, pic_pos):
         super().__init__(title="Send message")
         self.color = color
         self.channel = channel
         self.roles = roles
         self.button_style = button_style
         self.button_emoji = button_emoji
-        self.image_position_value = image_position
+        self.pic_url = pic_url
+        self.pic_pos = pic_pos
+        self.title_input = discord.ui.TextInput(
+            label="Title",
+            style=discord.TextStyle.short,
+            required=False,
+            max_length=256,
+        )
         self.text = discord.ui.TextInput(
             label="Text",
             style=discord.TextStyle.paragraph,
             required=True,
             max_length=4000,
         )
-        self.image_url = discord.ui.TextInput(
-            label="Image URL",
+        self.footer = discord.ui.TextInput(
+            label="Footer",
             style=discord.TextStyle.short,
             required=False,
-            placeholder="https://...",
-            max_length=512,
+            max_length=2048,
         )
+        self.add_item(self.title_input)
         self.add_item(self.text)
-        self.add_item(self.image_url)
+        self.add_item(self.footer)
 
     async def on_submit(self, interaction: discord.Interaction):
-        pos = self.image_position_value
-        if pos not in ("thumbnail", "image", "none"):
-            pos = "thumbnail"
-        embed = discord.Embed(description=str(self.text.value), color=self.color)
-        img = str(self.image_url.value).strip() if self.image_url.value else ""
-        if img and pos != "none":
-            if pos == "image":
-                embed.set_image(url=img)
+        embed = discord.Embed(
+            title=str(self.title_input.value) if self.title_input.value else None,
+            description=str(self.text.value),
+            color=self.color,
+        )
+        if self.footer.value:
+            embed.set_footer(text=str(self.footer.value))
+        if self.pic_url:
+            if self.pic_pos == "image":
+                embed.set_image(url=self.pic_url)
             else:
-                embed.set_thumbnail(url=img)
+                embed.set_thumbnail(url=self.pic_url)
         view = RoleButtonsView(self.roles, self.button_style, self.button_emoji) if self.roles else None
         try:
             await self.channel.send(embed=embed, view=view)
@@ -159,37 +155,6 @@ class SendMsgModal(discord.ui.Modal):
             await interaction.response.send_message("❌ Could not send message.", ephemeral=True)
             return
         await interaction.response.send_message("✅", ephemeral=True)
-
-
-class ImagePositionView(discord.ui.View):
-    def __init__(self, color, channel, roles, button_style, button_emoji):
-        super().__init__(timeout=120)
-        self.color = color
-        self.channel = channel
-        self.roles = roles
-        self.button_style = button_style
-        self.button_emoji = button_emoji
-        self.image_position = "thumbnail"
-
-    @discord.ui.select(
-        placeholder="Image position",
-        options=[
-            discord.SelectOption(label="thumbnail", value="thumbnail", description="Small image at the top-right corner"),
-            discord.SelectOption(label="image", value="image", description="Large image below the text"),
-            discord.SelectOption(label="none", value="none", description="No image"),
-        ],
-    )
-    async def select_position(self, interaction: discord.Interaction, select: discord.ui.Select):
-        self.image_position = select.values[0]
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
-    async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = SendMsgModal(
-            self.color, self.channel, self.roles,
-            self.button_style, self.button_emoji, self.image_position
-        )
-        await interaction.response.send_modal(modal)
 
 
 class BlacklistView(discord.ui.View):
@@ -1187,6 +1152,8 @@ class AdminCommands:
             role_id="Space-separated role IDs matching role_text",
             button_style="primary / secondary / success / danger",
             button_emoji="Emoji for role buttons (optional)",
+            pic_url="Image URL (optional)",
+            pic_pos="thumbnail or image (default: thumbnail)",
         )
         @app_commands.default_permissions(manage_channels=True)
         @app_commands.choices(button_style=[
@@ -1203,6 +1170,8 @@ class AdminCommands:
             role_id: str = None,
             button_style: app_commands.Choice[str] = None,
             button_emoji: str = None,
+            pic_url: str = None,
+            pic_pos: str = None,
         ):
             await interaction.response.defer(ephemeral=True)
             if not self._can_manage_channels(interaction.user):
@@ -1223,6 +1192,10 @@ class AdminCommands:
                     return
             style_value = button_style.value if button_style else "primary"
             emoji_value = button_emoji.strip() if button_emoji else None
+            pos = (pic_pos or "thumbnail").strip().lower()
+            if pos not in ("thumbnail", "image"):
+                await interaction.followup.send("❌ pic_pos must be 'thumbnail' or 'image'.", ephemeral=True)
+                return
             roles = []
             if role_text or role_id:
                 texts = role_text.split() if role_text else []
@@ -1260,12 +1233,8 @@ class AdminCommands:
                         await interaction.followup.send(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
                         return
                     roles.append(role)
-            view = ImagePositionView(parsed_color, target, roles, style_value, emoji_value)
-            await interaction.followup.send(
-                "Elige la posición de la imagen y pulsa Continue:",
-                view=view,
-                ephemeral=True
-            )
+            modal = SendMsgModal(parsed_color, target, roles, style_value, emoji_value, pic_url, pos)
+            await interaction.response.send_modal(modal)
 
     def _slash_channels(self, interaction, channels_arg):
         if not channels_arg:
