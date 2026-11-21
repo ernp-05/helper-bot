@@ -55,6 +55,12 @@ hilo_cmd = HiLoCommands(client, tree)
 async def on_message(message: discord.Message):
     if message.author == client.user:
         return
+    if message.guild is not None and message.content:
+        bl_level = admin_cmd._check_blacklist(message)
+        if bl_level is not None:
+            await admin_cmd._apply_blacklist_action(message, bl_level)
+            if not message.content.strip().startswith('!'):
+                return
     if await admin_cmd.handle_message(message):
         return
     if await misc_cmd.handle_message(message):
