@@ -41,7 +41,8 @@ class MiscCommands:
     def _format_role_list(self, roles):
         if not roles:
             return "None"
-        return ", ".join(r.name for r in roles)
+        ordered = sorted(roles, key=lambda r: r.position, reverse=True)
+        return ", ".join(r.mention for r in ordered)
 
     def _admin_roles(self, guild):
         return [r for r in guild.roles if r.permissions.ban_members and not r.is_default()]
@@ -62,7 +63,7 @@ class MiscCommands:
                 owner = await self.bot.fetch_user(guild.owner_id)
             except Exception:
                 owner = None
-        owner_text = owner.display_name if owner else f"ID {guild.owner_id}"
+        owner_text = owner.mention if owner else f"ID {guild.owner_id}"
 
         created_fmt = discord.utils.format_dt(guild.created_at, style="F")
 
