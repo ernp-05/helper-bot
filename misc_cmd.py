@@ -38,7 +38,25 @@ class MiscCommands:
             return discord.Object(id=uid)
         return message.author
 
-    def _chunk_text(self, text, limit=1900):
+    def _admin_roles(self, guild):
+        return [r for r in guild.roles if r.permissions.ban_members and not r.is_default()]
+
+    def _mod_roles(self, guild, exclude_ids=None):
+        exclude_ids = exclude_ids or set()
+        return [
+            r for r in guild.roles
+            if r.permissions.manage_messages
+            and not r.is_default()
+            and r.id not in exclude_ids
+        ]
+
+    def _roles_text(self, roles):
+        if not roles:
+            return "None"
+        ordered = sorted(roles, key=lambda r: r.position, reverse=True)
+        return ", ".join(r.mention for r in ordered)
+
+    def _split_by_limit(self, text, limit):
         chunks = []
         current = ""
         for piece in text.split(", "):
@@ -52,45 +70,6 @@ class MiscCommands:
         if current:
             chunks.append(current)
         return chunks
-
-    def _admin_roles(self, guild):
-        return [r for r in guild.roles if r.permissions.ban_members and not r.is_default()]
-
-    def _mod_roles(self, guild, exclude_ids=None):
-        exclude_ids = exclude_ids or set()
-        return [
-            r for r in guild.roles
-            if r.permissions.manage_messages
-            and not r.is_default()
-            and r.id not in exclude_ids
-        ]
-
-    def _role_embeds(self, title, roles, color=0x5865F2, chunk_limit=3800):
-        ordered = sorted(roles, key=lambda r: r.position, reverse=True)
-        chunks = []
-        current = ""
-        for role in ordered:
-            piece = role.mention + ", "
-            if len(current) + len(piece) > chunk_limit:
-                if current:
-                    chunks.append(current.rstrip(", "))
-                current = ""
-            current += piece
-        if current:
-            chunks.append(current.rstrip(", "))
-        embeds = []
-        total = len(chunks)
-        for i, chunk in enumerate(chunks):
-            embed = discord.Embed(color=color)
-            if i == 0:
-                embed.title = title
-            embed.description = chunk
-            embed.set_footer(text=f"{title} · {i + 1}/{total}")
-            embeds.append(embed)
-        if not embeds:
-            embed = discord.Embed(title=title, description="None", color=color)
-            embeds.append(embed)
-        return embeds
 
     async def _build_serverinfo_embeds(self, guild):
         owner = guild.owner
@@ -109,9 +88,10 @@ class MiscCommands:
 
         description = (guild.description or "").strip()
 
-        embed = discord.Embed(title=guild.name, color=0x5865F2)
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
+        admin_text = self._roles_text(admin_roles)
+        mod_text = self._roles_text(mod_roles)
+
+        full_roles_text = f"⭐ Admin Roles: {admin_text}\n✳️ Mod Roles: {mod_text}"
 
         first_lines = []
         if description:
@@ -119,6 +99,16 @@ class MiscCommands:
         first_lines.append(f"👑 Guild Owner: {owner_text}")
         first_lines.append(f"📆 Guild Creation: {created_fmt}")
 
+        roles_value = (
+            f"Total Roles: {len(guild.roles)}\n"
+            f"⭐ Admin Roles: {len(admin_roles)}\n"
+            f"✳️ Mod Roles: {len(mod_roles)}\n\n"
+            f"{full_roles_text}"
+        )
+
+        embed = discord.Embed(title=guild.name, color=0x5865F2)
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
         embed.add_field(name="\u200b", value="\n".join(first_lines), inline=False)
         embed.add_field(
             name="Members",
@@ -129,6 +119,14 @@ class MiscCommands:
             ),
             inline=False,
         )
+
+        total_len = len(embed.title or "") + len("\u200b") + len("\n".join(first_lines)) + len("Members") + len(embed.fields[1].value) + len("Roles") + len(roles_value)
+        field_limit = 1024
+
+        if len(roles_value) <= field_limit and total_len <= 6000:
+            embed.add_field(name="Roles", value=roles_value, inline=False)
+            return [embed]
+
         embed.add_field(
             name="Roles",
             value=(
@@ -138,10 +136,20 @@ class MiscCommands:
             ),
             inline=False,
         )
-
         embeds = [embed]
-        embeds.extend(self._role_embeds("⭐ Admin Roles", admin_roles))
-        embeds.extend(self._role_embeds("✳️ Mod Roles", mod_roles))
+
+        for label, text in (("⭐ Admin Roles", admin_text), ("✳️ Mod Roles", mod_text)):
+            if text == "None":
+                continue
+            chunks = self._split_by_limit(text, 4000)
+            total = len(chunks)
+            for i, chunk in enumerate(chunks):
+                e = discord.Embed(color=0x5865F2)
+                e.title = label if i == 0 else f"{label} ({i + 1})"
+                e.description = chunk
+                e.set_footer(text=f"{label} · {i + 1}/{total}")
+                embeds.append(e)
+
         return embeds
 
     def _setup_slash(self):
