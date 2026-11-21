@@ -74,16 +74,20 @@ class MiscCommands:
         exclude = {r.id for r in admin_roles}
         mod_roles = self._mod_roles(guild, exclude)
 
+        description = (guild.description or "").strip()
+
         embed = discord.Embed(title=guild.name, color=0x5865F2)
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
 
+        first_lines = []
+        if description:
+            first_lines.append(f"📝 {description}")
+        first_lines.append(f"👑 Guild Owner: {owner_text}")
+        first_lines.append(f"📆 Guild Creation: {created_fmt}")
+
         embed.add_field(
-            name="Guild Name",
-            value=(
-                f"👑 Guild Owner: {owner_text}\n"
-                f"📆 Guild Creation: {created_fmt}"
-            ),
+            value="\n".join(first_lines),
             inline=False,
         )
         embed.add_field(
