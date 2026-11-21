@@ -65,7 +65,34 @@ class MiscCommands:
             and r.id not in exclude_ids
         ]
 
-    async def _build_serverinfo_embed(self, guild):
+    def _role_embeds(self, title, roles, color=0x5865F2, chunk_limit=3800):
+        ordered = sorted(roles, key=lambda r: r.position, reverse=True)
+        chunks = []
+        current = ""
+        for role in ordered:
+            piece = role.mention + ", "
+            if len(current) + len(piece) > chunk_limit:
+                if current:
+                    chunks.append(current.rstrip(", "))
+                current = ""
+            current += piece
+        if current:
+            chunks.append(current.rstrip(", "))
+        embeds = []
+        total = len(chunks)
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(color=color)
+            if i == 0:
+                embed.title = title
+            embed.description = chunk
+            embed.set_footer(text=f"{title} · {i + 1}/{total}")
+            embeds.append(embed)
+        if not embeds:
+            embed = discord.Embed(title=title, description="None", color=color)
+            embeds.append(embed)
+        return embeds
+
+    async def _build_serverinfo_embeds(self, guild):
         owner = guild.owner
         if owner is None:
             owner = await self.bot.fetch_user(guild.owner_id)
@@ -92,11 +119,7 @@ class MiscCommands:
         first_lines.append(f"👑 Guild Owner: {owner_text}")
         first_lines.append(f"📆 Guild Creation: {created_fmt}")
 
-        embed.add_field(
-            name="\u200b",
-            value="\n".join(first_lines),
-            inline=False,
-        )
+        embed.add_field(name="\u200b", value="\n".join(first_lines), inline=False)
         embed.add_field(
             name="Members",
             value=(
@@ -115,27 +138,11 @@ class MiscCommands:
             ),
             inline=False,
         )
-        return embed, admin_roles, mod_roles
 
-    async def _safe_send(self, channel, *args, **kwargs):
-        return await channel.send(*args, **kwargs)
-
-    async def _safe_error(self, message, error):
-        try:
-            await message.channel.send(f"❌ {type(error).__name__}: {str(error)[:1900]}")
-        except Exception:
-            pass
-
-    async def _send_roles_extra(self, channel, admin_roles, mod_roles):
-        for label, roles in (("⭐ Admin Roles", admin_roles), ("✳️ Mod Roles", mod_roles)):
-            if not roles:
-                continue
-            ordered = sorted(roles, key=lambda r: r.position, reverse=True)
-            text = ", ".join(r.mention for r in ordered)
-            chunks = self._chunk_text(text)
-            for i, chunk in enumerate(chunks):
-                header = f"**{label}** ({len(roles)}):\n" if i == 0 else ""
-                await channel.send(header + chunk)
+        embeds = [embed]
+        embeds.extend(self._role_embeds("⭐ Admin Roles", admin_roles))
+        embeds.extend(self._role_embeds("✳️ Mod Roles", mod_roles))
+        return embeds
 
     def _setup_slash(self):
         @self.tree.command(name="alea", description="Random number")
@@ -173,15 +180,9 @@ class MiscCommands:
                 await interaction.followup.send("❌ This command only works in a server.")
                 return
             try:
-                embed, admin_roles, mod_roles = await self._build_serverinfo_embed(interaction.guild)
-                await interaction.followup.send(embed=embed)
-                for label, roles in (("⭐ Admin Roles", admin_roles), ("✳️ Mod Roles", mod_roles)):
-                    if not roles:
-                        continue
-                    ordered = sorted(roles, key=lambda r: r.position, reverse=True)
-                    text = ", ".join(r.mention for r in ordered)
-                    for chunk in self._chunk_text(text):
-                        await interaction.followup.send(chunk)
+                embeds = await self._build_serverinfo_embeds(interaction.guild)
+                for embed in embeds:
+                    await interaction.followup.send(embed=embed)
             except discord.HTTPException as e:
                 await interaction.followup.send(f"❌ HTTP {e.status}: {str(e.text)[:1900]}")
             except Exception as e:
@@ -406,9 +407,9 @@ class MiscCommands:
                 await message.channel.send("❌ This command only works in a server.")
                 return True
             try:
-                embed, admin_roles, mod_roles = await self._build_serverinfo_embed(message.guild)
-                await message.channel.send(embed=embed)
-                await self._send_roles_extra(message.channel, admin_roles, mod_roles)
+                embeds = await self._build_serverinfo_embeds(message.guild)
+                for embed in embeds:
+                    await message.channel.send(embed=embed)
             except discord.HTTPException as e:
                 await message.channel.send(f"❌ HTTP {e.status}: {str(e.text)[:1900]}")
             except Exception as e:
