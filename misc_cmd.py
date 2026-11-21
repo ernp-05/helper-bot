@@ -181,13 +181,23 @@ class MiscCommands:
 
         @self.tree.command(name="serverinfo", description="Show server info")
         async def slash_serverinfo(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=False)
+            print(f"SLASH SERVERINFO START guild={interaction.guild_id}")
+            try:
+                await interaction.response.defer(ephemeral=False)
+            except Exception as e:
+                print(f"SLASH SERVERINFO DEFER ERROR: {e!r}")
+                return
             if interaction.guild is None:
-                await interaction.followup.send("❌ This command only works in a server.")
+                try:
+                    await interaction.followup.send("❌ This command only works in a server.")
+                except Exception as e:
+                    print(f"SLASH SERVERINFO NOGUILD SEND ERROR: {e!r}")
                 return
             try:
                 embed, admin_roles, mod_roles = await self._build_serverinfo_embed(interaction.guild)
+                print(f"SLASH SERVERINFO EMBED BUILT fields={len(embed.fields)}")
                 await interaction.followup.send(embed=embed)
+                print("SLASH SERVERINFO EMBED SENT")
                 for label, roles in (("⭐ Admin Roles", admin_roles), ("✳️ Mod Roles", mod_roles)):
                     if not roles:
                         continue
@@ -197,6 +207,7 @@ class MiscCommands:
                     for i, chunk in enumerate(chunks):
                         header = f"**{label}** ({len(roles)}):\n" if i == 0 else ""
                         await interaction.followup.send(header + chunk)
+                print("SLASH SERVERINFO DONE")
             except Exception as e:
                 print(f"SLASH SERVERINFO ERROR: {e!r}")
                 try:
@@ -336,13 +347,17 @@ class MiscCommands:
             return True
 
         if lower.startswith('!serverinfo'):
+            print(f"MSG SERVERINFO START guild={message.guild.id if message.guild else None}")
             if message.guild is None:
                 await self._safe_error(message)
                 return True
             try:
                 embed, admin_roles, mod_roles = await self._build_serverinfo_embed(message.guild)
+                print(f"MSG SERVERINFO EMBED BUILT fields={len(embed.fields)}")
                 await self._safe_send(message.channel, embed=embed)
+                print("MSG SERVERINFO EMBED SENT")
                 await self._send_roles_extra(message.channel, admin_roles, mod_roles)
+                print("MSG SERVERINFO DONE")
             except Exception as e:
                 print(f"SERVERINFO ERROR: {e!r}")
                 await self._safe_error(message)
