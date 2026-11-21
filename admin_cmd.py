@@ -3,6 +3,8 @@ import json
 import asyncio
 import aiohttp
 import re
+import time
+import collections
 import discord
 from discord import app_commands
 from datetime import timedelta
@@ -18,6 +20,11 @@ BUTTON_STYLES = {
     'success': discord.ButtonStyle.success,
     'danger': discord.ButtonStyle.danger,
 }
+
+ROLE_BUTTON_WINDOW = 600
+ROLE_BUTTON_MAX_HITS = 2
+_ROLE_BUTTON_HITS = collections.defaultdict(collections.deque)
+_ROLE_BUTTON_RESET = {}
 
 
 def _parse_hex_color(value):
@@ -68,6 +75,27 @@ class DynamicRoleButton(discord.ui.DynamicItem[discord.ui.Button], template=r'ro
         if guild is None:
             await interaction.response.send_message("❌", ephemeral=True)
             return
+        key = (guild.id, interaction.user.id)
+        now = time.time()
+        reset_at = _ROLE_BUTTON_RESET.get(key)
+        if reset_at is not None and now >= reset_at:
+            _ROLE_BUTTON_HITS.pop(key, None)
+            _ROLE_BUTTON_RESET.pop(key, None)
+            reset_at = None
+        hits = _ROLE_BUTTON_HITS[key]
+        while hits and now - hits[0] > ROLE_BUTTON_WINDOW:
+            hits.popleft()
+        if reset_at is not None:
+            return
+        if len(hits) >= ROLE_BUTTON_MAX_HITS:
+            reset_at = int(hits[0] + ROLE_BUTTON_WINDOW)
+            _ROLE_BUTTON_RESET[key] = reset_at
+            await interaction.response.send_message(
+                f"Error 429: wait <t:{reset_at}:R> to try again",
+                ephemeral=True,
+            )
+            return
+        hits.append(now)
         role = guild.get_role(self.role_id)
         if role is None:
             await interaction.response.send_message("❌ Role not found.", ephemeral=True)
@@ -369,7 +397,7 @@ class AdminCommands:
             resolved = message.reference.resolved
             if isinstance(resolved, discord.Message):
                 return resolved.author
-        ids = re.findall(r'(?<!<@!?)(?<!\d)(\d{15,20})(?!\d)', message.content)
+        ids = re.findall(r'(?<!<@!)(?<!<@)(?<!\d)(\d{15,20})(?!\d)', message.content)
         if ids:
             uid = int(ids[0])
             member = message.guild.get_member(uid) if message.guild else None
