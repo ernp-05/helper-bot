@@ -426,6 +426,97 @@ class AdminCommands:
             return True
         return getattr(p, perm, False)
 
+    async def _handle_getreacts(self, message, rest):
+        author = message.author
+        if not isinstance(author, discord.Member):
+            if message.guild is not None:
+                await message.add_reaction('❌')
+                return True
+        if message.guild is not None:
+            if not self._can_manage_messages(author):
+                await message.add_reaction('❌')
+                return True
+        link = rest.strip()
+        if not link:
+            await message.add_reaction('❌')
+            return True
+        match = re.fullmatch(
+            r'https?://(?:www\.)?(?:discord\.com|discordapp\.com)/channels/(\d+)/(\d+)/(\d+)',
+            link,
+        )
+        if not match:
+            await message.add_reaction('❌')
+            return True
+        guild_id = int(match.group(1))
+        channel_id = int(match.group(2))
+        message_id = int(match.group(3))
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            try:
+                guild = await self.bot.fetch_guild(guild_id)
+            except Exception:
+                guild = None
+        if guild is None:
+            await message.add_reaction('❌')
+            return True
+        if message.guild is not None and guild.id != message.guild.id:
+            await message.add_reaction('❌')
+            return True
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            await message.add_reaction('❌')
+            return True
+        try:
+            target = await channel.fetch_message(message_id)
+        except Exception:
+            await message.add_reaction('❌')
+            return True
+        user_ids = []
+        seen = set()
+        for reaction in target.reactions:
+            async for user in reaction.users():
+                if user.id in seen:
+                    continue
+                seen.add(user.id)
+                user_ids.append(user.id)
+        try:
+            dm = author.dm_channel or await author.create_dm()
+        except Exception:
+            await message.add_reaction('❌')
+            return True
+        if not user_ids:
+            try:
+                await dm.send("No reactions.")
+            except Exception:
+                pass
+            if message.guild is not None:
+                await message.add_reaction('✅')
+            return True
+        lines = []
+        current = ""
+        for uid in user_ids:
+            piece = f"{uid}, "
+            if len(current) + len(piece) > 1900:
+                lines.append(current.rstrip(", "))
+                current = ""
+            current += piece
+        if current:
+            lines.append(current.rstrip(", "))
+        try:
+            for chunk in lines:
+                await dm.send(chunk)
+        except Exception:
+            await message.add_reaction('❌')
+            return True
+        if message.guild is not None:
+            await message.add_reaction('✅')
+        return True
+
     async def _apply_lock(self, channel):
         try:
             overwrites = channel.overwrites
@@ -1597,5 +1688,9 @@ class AdminCommands:
                     ok_any = True
             await message.add_reaction('✅' if ok_any else '❌')
             return True
+
+        if normalized.startswith('getreacts'):
+            rest = stripped[stripped.lower().index('getreacts') + len('getreacts'):].strip()
+            return await self._handle_getreacts(message, rest)
 
         return False
