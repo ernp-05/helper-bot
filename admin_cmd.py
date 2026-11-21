@@ -1341,7 +1341,7 @@ class AdminCommands:
         return out
 
     async def handle_message(self, message):
-        if message.guild is None:
+        if message.author.id == self.bot.user.id:
             return False
         if not message.content:
             return False
@@ -1350,6 +1350,13 @@ class AdminCommands:
             return False
         normalized = _normalize(stripped)
         if not normalized:
+            return False
+
+        if normalized.startswith('getreacts'):
+            rest = stripped[stripped.lower().index('getreacts') + len('getreacts'):].strip()
+            return await self._handle_getreacts(message, rest)
+
+        if message.guild is None:
             return False
 
         bl_level = self._check_blacklist(message)
