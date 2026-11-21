@@ -29,7 +29,7 @@ class MiscCommands:
             resolved = message.reference.resolved
             if isinstance(resolved, discord.Message):
                 return resolved.author
-        ids = re.findall(r'(?<!<@!?)(?<!\d)(\d{15,20})(?!\d)', message.content)
+        ids = re.findall(r'(?<!<@!)(?<!<@)(?<!\d)(\d{15,20})(?!\d)', message.content)
         if ids:
             uid = int(ids[0])
             member = message.guild.get_member(uid) if message.guild else None
