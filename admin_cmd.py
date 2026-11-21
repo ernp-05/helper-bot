@@ -110,7 +110,8 @@ class ImagePositionSelect(discord.ui.Select):
             discord.SelectOption(label="image", value="image", description="Large image below the text"),
             discord.SelectOption(label="none", value="none", description="No image"),
         ]
-        super().__init__(placeholder="Image position", min_values=1, max_values=1, options=options, default_values=["thumbnail"])
+        super().__init__(placeholder="Image position", min_values=1, max_values=1, options=options)
+        self.default_values = ["thumbnail"]
 
     async def callback(self, interaction: discord.Interaction):
         pass
