@@ -1,8 +1,8 @@
-import re
 import sys
 import json
 import asyncio
 import aiohttp
+import re
 import discord
 from discord import app_commands
 from datetime import timedelta
@@ -1173,13 +1173,12 @@ class AdminCommands:
             pic_url: str = None,
             pic_pos: str = None,
         ):
-            await interaction.response.defer(ephemeral=True)
             if not self._can_manage_channels(interaction.user):
-                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
                 return
             parsed_color = _parse_hex_color(color)
             if parsed_color is None:
-                await interaction.followup.send("❌ Invalid color. Use 000000-FFFFFF.", ephemeral=True)
+                await interaction.response.send_message("❌ Invalid color. Use 000000-FFFFFF.", ephemeral=True)
                 return
             target = interaction.channel
             if channel:
@@ -1188,49 +1187,49 @@ class AdminCommands:
                 except Exception:
                     target = None
                 if target is None or not isinstance(target, discord.TextChannel):
-                    await interaction.followup.send("❌ Invalid channel ID.", ephemeral=True)
+                    await interaction.response.send_message("❌ Invalid channel ID.", ephemeral=True)
                     return
             style_value = button_style.value if button_style else "primary"
             emoji_value = button_emoji.strip() if button_emoji else None
             pos = (pic_pos or "thumbnail").strip().lower()
             if pos not in ("thumbnail", "image"):
-                await interaction.followup.send("❌ pic_pos must be 'thumbnail' or 'image'.", ephemeral=True)
+                await interaction.response.send_message("❌ pic_pos must be 'thumbnail' or 'image'.", ephemeral=True)
                 return
             roles = []
             if role_text or role_id:
                 texts = role_text.split() if role_text else []
                 ids = role_id.split() if role_id else []
                 if len(texts) != len(ids):
-                    await interaction.followup.send("❌ role_text and role_id must have the same number of items.", ephemeral=True)
+                    await interaction.response.send_message("❌ role_text and role_id must have the same number of items.", ephemeral=True)
                     return
                 if len(texts) > 25:
-                    await interaction.followup.send("❌ Maximum 25 roles.", ephemeral=True)
+                    await interaction.response.send_message("❌ Maximum 25 roles.", ephemeral=True)
                     return
                 if not self._can_manage_roles(interaction.user):
-                    await interaction.followup.send("❌ You need Manage Roles to add role buttons.", ephemeral=True)
+                    await interaction.response.send_message("❌ You need Manage Roles to add role buttons.", ephemeral=True)
                     return
                 if not self._bot_can(interaction.guild, 'manage_roles'):
-                    await interaction.followup.send("❌ I need Manage Roles to add role buttons.", ephemeral=True)
+                    await interaction.response.send_message("❌ I need Manage Roles to add role buttons.", ephemeral=True)
                     return
                 me = interaction.guild.me
                 for rid in ids:
                     if not rid.isdigit():
-                        await interaction.followup.send(f"❌ Invalid role ID: {rid}", ephemeral=True)
+                        await interaction.response.send_message(f"❌ Invalid role ID: {rid}", ephemeral=True)
                         return
                     role = interaction.guild.get_role(int(rid))
                     if role is None:
-                        await interaction.followup.send(f"❌ Role not found: {rid}", ephemeral=True)
+                        await interaction.response.send_message(f"❌ Role not found: {rid}", ephemeral=True)
                         return
                     if not self._is_guild_owner(interaction.guild, interaction.user.id):
                         if not interaction.user.guild_permissions.administrator:
                             if interaction.user.top_role.position <= role.position:
-                                await interaction.followup.send(f"❌ Role {role.name} is not below your highest role.", ephemeral=True)
+                                await interaction.response.send_message(f"❌ Role {role.name} is not below your highest role.", ephemeral=True)
                                 return
                     if me is None or me.top_role.position <= role.position:
-                        await interaction.followup.send(f"❌ Role {role.name} is above my highest role.", ephemeral=True)
+                        await interaction.response.send_message(f"❌ Role {role.name} is above my highest role.", ephemeral=True)
                         return
                     if role.managed:
-                        await interaction.followup.send(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
+                        await interaction.response.send_message(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
                         return
                     roles.append(role)
             modal = SendMsgModal(parsed_color, target, roles, style_value, emoji_value, pic_url, pos)
