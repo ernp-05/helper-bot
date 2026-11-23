@@ -867,6 +867,46 @@ class AdminCommands:
             await message.add_reaction('❌')
         return True
 
+    async def _delete_block(self, channel, ids):
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            return 0, 0
+        deleted = failed = 0
+        fresh = []
+        old = []
+        now = discord.utils.utcnow()
+        for mid in ids:
+            try:
+                msg = await channel.fetch_message(mid)
+            except Exception:
+                failed += 1
+                continue
+            age = (now - msg.created_at).total_seconds()
+            if age < 14 * 24 * 3600:
+                fresh.append(msg)
+            else:
+                old.append(msg)
+        if fresh:
+            try:
+                await channel.delete_messages(fresh)
+                deleted += len(fresh)
+            except discord.HTTPException:
+                for msg in fresh:
+                    try:
+                        await msg.delete()
+                        deleted += 1
+                    except Exception:
+                        failed += 1
+            await asyncio.sleep(3)
+        for msg in old:
+            try:
+                await msg.delete()
+                deleted += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(2.5)
+        return deleted, failed
+
     def _setup_slash(self):
         tree = self.tree
 
@@ -1012,11 +1052,81 @@ class AdminCommands:
             if amount < 1 or amount > 100:
                 await interaction.followup.send("❌ Amount must be between 1 and 100.", ephemeral=True)
                 return
-            try:
-                await interaction.channel.purge(limit=amount, bulk=False)
-                await interaction.followup.send(f"✅ Deleted {amount}", ephemeral=True)
-            except Exception:
-                await interaction.followup.send("❌", ephemeral=True)
+            buffer = []
+            remaining = amount
+            before = None
+            while remaining > 0:
+                kwargs = {'limit': 100}
+                if before is not None:
+                    kwargs['before'] = before
+                batch = [m async for m in interaction.channel.history(**kwargs)]
+                if not batch:
+                    break
+                await asyncio.sleep(2)
+                for m in batch:
+                    if m.pinned:
+                        continue
+                    buffer.append(m.id)
+                    remaining -= 1
+                    if len(buffer) >= 100:
+                        await self._delete_block(interaction.channel, buffer)
+                        buffer = []
+                    if remaining <= 0:
+                        break
+                before = batch[-1]
+            if buffer:
+                await self._delete_block(interaction.channel, buffer)
+            await interaction.followup.send("✅", ephemeral=True)
+
+        @tree.command(name="purges", description="Delete messages matching a term from history")
+        @app_commands.describe(count="Max messages to delete", term="Text to match (case-insensitive)")
+        @app_commands.default_permissions(manage_messages=True)
+        async def slash_purges(interaction: discord.Interaction, count: int, term: str):
+            await interaction.response.defer(ephemeral=True)
+            if not self._can_manage_messages(interaction.user):
+                await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
+                return
+            if not self._bot_can(interaction.guild, 'manage_messages'):
+                await interaction.followup.send("❌ I don't have permission.", ephemeral=True)
+                return
+            if count < 1 or count > 1000:
+                await interaction.followup.send("❌ count must be 1-1000.", ephemeral=True)
+                return
+            term_low = term.lower()
+            buffer = []
+            remaining = count
+            total_deleted = total_failed = 0
+            before = None
+            while remaining > 0:
+                kwargs = {'limit': 100}
+                if before is not None:
+                    kwargs['before'] = before
+                batch = [m async for m in interaction.channel.history(**kwargs)]
+                if not batch:
+                    break
+                await asyncio.sleep(2)
+                for m in batch:
+                    if m.pinned:
+                        continue
+                    if term_low in (m.content or '').lower():
+                        buffer.append(m.id)
+                        remaining -= 1
+                        if len(buffer) >= 100:
+                            d, f = await self._delete_block(interaction.channel, buffer)
+                            total_deleted += d
+                            total_failed += f
+                            buffer = []
+                        if remaining <= 0:
+                            break
+                before = batch[-1]
+            if buffer:
+                d, f = await self._delete_block(interaction.channel, buffer)
+                total_deleted += d
+                total_failed += f
+            await interaction.followup.send(
+                f"✅ Deleted {total_deleted}" + (f" · ❌ {total_failed} failed" if total_failed else ""),
+                ephemeral=True,
+            )
 
         @tree.command(name="pin", description="Pin or unpin the given message ID")
         @app_commands.describe(message_id="Message ID")
@@ -1555,31 +1665,67 @@ class AdminCommands:
             try:
                 if message.reference is not None:
                     target_id = message.reference.message_id
-                    to_delete = []
-                    async for msg in message.channel.history(limit=None, after=discord.Object(id=target_id), oldest_first=False):
-                        to_delete.append(msg)
-                    try:
-                        target_msg = await message.channel.fetch_message(target_id)
-                        to_delete.append(target_msg)
-                    except Exception:
-                        pass
-                    to_delete.append(message)
-                    to_delete = [m for m in to_delete if not m.pinned]
-                    for m in to_delete:
-                        try:
-                            await m.delete()
-                        except Exception:
-                            pass
+                    buffer = []
+                    before = None
+                    while True:
+                        kwargs = {'limit': 100}
+                        if before is not None:
+                            kwargs['before'] = before
+                        batch = [m async for m in message.channel.history(**kwargs)]
+                        if not batch:
+                            break
+                        await asyncio.sleep(2)
+                        stop = False
+                        for m in batch:
+                            if m.id == target_id:
+                                stop = True
+                                break
+                            if not m.pinned and m.id != message.id:
+                                buffer.append(m.id)
+                                if len(buffer) >= 100:
+                                    await self._delete_block(message.channel, buffer)
+                                    buffer = []
+                        if stop:
+                            break
+                        before = batch[-1]
+                    if target_id not in buffer:
+                        buffer.append(target_id)
+                    buffer.append(message.id)
+                    if buffer:
+                        await self._delete_block(message.channel, buffer)
                     return True
                 else:
                     if not rest.isdigit():
                         await message.add_reaction('❌')
                         return True
                     n = int(rest)
-                    if n < 1 or n > 100:
+                    if n < 1:
                         await message.add_reaction('❌')
                         return True
-                    await message.channel.purge(limit=n + 1, bulk=False)
+                    buffer = []
+                    remaining = n
+                    before = None
+                    while remaining > 0:
+                        kwargs = {'limit': 100}
+                        if before is not None:
+                            kwargs['before'] = before
+                        batch = [m async for m in message.channel.history(**kwargs)]
+                        if not batch:
+                            break
+                        await asyncio.sleep(2)
+                        for m in batch:
+                            if m.id == message.id or m.pinned:
+                                continue
+                            buffer.append(m.id)
+                            remaining -= 1
+                            if len(buffer) >= 100:
+                                await self._delete_block(message.channel, buffer)
+                                buffer = []
+                            if remaining <= 0:
+                                break
+                        before = batch[-1]
+                    if buffer:
+                        await self._delete_block(message.channel, buffer)
                     return True
             except Exception:
                 try:
