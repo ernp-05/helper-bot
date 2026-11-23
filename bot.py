@@ -10,6 +10,7 @@ from misc_cmd import MiscCommands
 from minigames.dice_game import DiceGame
 from minigames.tictactoe import TicTacToeCommands
 from minigames.hi_lo import HiLoCommands
+from welcome_system import WelcomeSystem
 
 if len(sys.argv) < 2:
     print("Usage: python bot.py <TOKEN>")
@@ -50,6 +51,8 @@ dice_game = DiceGame(client, tree)
 ttt_cmd = TicTacToeCommands(client, tree)
 hilo_cmd = HiLoCommands(client, tree)
 
+welcome_system = WelcomeSystem(client, welcome_channel_id=None)
+
 
 @client.event
 async def on_message(message: discord.Message):
@@ -77,8 +80,22 @@ async def on_message(message: discord.Message):
 
 
 @client.event
+async def on_member_join(member: discord.Member):
+    # Comment the next line if you wants turn of welcome system
+    await welcome_system.on_member_join(member)
+
+
+@client.event
+async def on_member_remove(member: discord.Member):
+    # Comment the next line if you wants turn of welcome system
+    await welcome_system.on_member_remove(member)
+
+
+@client.event
 async def on_ready():
     await tree.sync()
+    for guild in client.guilds:
+        await welcome_system.cache_guild_invites(guild)
     print(f"Logged in as {client.user}")
 
 
