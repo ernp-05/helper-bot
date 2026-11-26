@@ -48,6 +48,42 @@ def _normalize(content):
     return s.lower()
 
 
+def _split_quoted(text):
+    if not text:
+        return []
+    result = []
+    current = []
+    in_quotes = False
+    for ch in text:
+        if ch == '"':
+            in_quotes = not in_quotes
+            if not in_quotes:
+                result.append(''.join(current))
+                current = []
+            continue
+        if ch == ' ' and not in_quotes:
+            if current:
+                result.append(''.join(current))
+                current = []
+            continue
+        current.append(ch)
+    if current:
+        result.append(''.join(current))
+    return result
+
+
+def _extract_message_link(text):
+    if not text:
+        return None
+    m = re.fullmatch(
+        r'https?://(?:www\.)?(?:discord\.com|discordapp\.com)/channels/(\d+)/(\d+)/(\d+)',
+        text.strip(),
+    )
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
 class DynamicRoleButton(discord.ui.DynamicItem[discord.ui.Button], template=r'role_(?P<id>\d+)_(?P<style>primary|secondary|success|danger)(?:_(?P<emoji>.+))?'):
     def __init__(self, role_id: int, label: str = "Role", style: str = "primary", emoji: str = None):
         super().__init__(
@@ -131,9 +167,9 @@ class RoleButtonsView(discord.ui.View):
             self.add_item(DynamicRoleButton(role.id, label, style, emoji))
 
 
-class SendMsgModal(discord.ui.Modal):
-    def __init__(self, color, channel, role_labels, button_style, button_emoji, pic_url, pic_pos):
-        super().__init__(title="Send message")
+class SendEmbModal(discord.ui.Modal):
+    def __init__(self, color, channel, role_labels, button_style, button_emoji, pic_url, pic_pos, edit_target=None, edit_text_only=False):
+        super().__init__(title="Send embed")
         self.color = color
         self.channel = channel
         self.role_labels = role_labels
@@ -141,23 +177,38 @@ class SendMsgModal(discord.ui.Modal):
         self.button_emoji = button_emoji
         self.pic_url = pic_url
         self.pic_pos = pic_pos
+        self.edit_target = edit_target
+        self.edit_text_only = edit_text_only
+
+        default_title = ""
+        default_text = ""
+        default_footer = ""
+        if edit_target is not None and edit_target.embeds:
+            emb = edit_target.embeds[0]
+            default_title = emb.title or ""
+            default_text = emb.description or ""
+            default_footer = emb.footer.text if emb.footer else ""
+
         self.title_input = discord.ui.TextInput(
             label="Title",
             style=discord.TextStyle.short,
             required=False,
             max_length=256,
+            default=default_title,
         )
         self.text = discord.ui.TextInput(
             label="Text",
             style=discord.TextStyle.paragraph,
             required=True,
             max_length=4000,
+            default=default_text,
         )
         self.footer = discord.ui.TextInput(
             label="Footer",
             style=discord.TextStyle.short,
             required=False,
             max_length=2048,
+            default=default_footer,
         )
         self.add_item(self.title_input)
         self.add_item(self.text)
@@ -176,6 +227,19 @@ class SendMsgModal(discord.ui.Modal):
                 embed.set_image(url=self.pic_url)
             else:
                 embed.set_thumbnail(url=self.pic_url)
+
+        if self.edit_target is not None:
+            view = None
+            if not self.edit_text_only:
+                view = RoleButtonsView(self.role_labels, self.button_style, self.button_emoji) if self.role_labels else None
+            try:
+                await self.edit_target.edit(embed=embed, view=view)
+            except Exception:
+                await interaction.response.send_message("❌ Could not edit message.", ephemeral=True)
+                return
+            await interaction.response.send_message("✅", ephemeral=True)
+            return
+
         view = RoleButtonsView(self.role_labels, self.button_style, self.button_emoji) if self.role_labels else None
         try:
             await self.channel.send(embed=embed, view=view)
@@ -907,6 +971,28 @@ class AdminCommands:
             await asyncio.sleep(2.5)
         return deleted, failed
 
+    async def _resolve_edit_target(self, interaction, target_ref):
+        if not target_ref:
+            return None
+        link = _extract_message_link(target_ref)
+        if link is not None:
+            guild_id, channel_id, message_id = link
+            if interaction.guild is None or guild_id != interaction.guild.id:
+                return None
+            channel = interaction.guild.get_channel(channel_id)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return None
+            try:
+                return await channel.fetch_message(message_id)
+            except Exception:
+                return None
+        if target_ref.isdigit():
+            try:
+                return await interaction.channel.fetch_message(int(target_ref))
+            except Exception:
+                return None
+        return None
+
     def _setup_slash(self):
         tree = self.tree
 
@@ -1149,10 +1235,10 @@ class AdminCommands:
             except Exception:
                 await interaction.followup.send("❌", ephemeral=True)
 
-        @tree.command(name="kick", description="Kick a member")
-        @app_commands.describe(member="Member to kick", reason="Reason")
+        @tree.command(name="kick", description="Kick a member or all members with a role")
+        @app_commands.describe(member="Member to kick", role="Role: kick all members with this role", reason="Reason")
         @app_commands.default_permissions(kick_members=True)
-        async def slash_kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
+        async def slash_kick(interaction: discord.Interaction, member: discord.Member = None, role: discord.Role = None, reason: str = None):
             await interaction.response.defer(ephemeral=True)
             if not self._can_moderate(interaction.user, 'kick_members'):
                 await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
@@ -1160,16 +1246,27 @@ class AdminCommands:
             if not self._bot_can(interaction.guild, 'kick_members'):
                 await interaction.followup.send("❌ I don't have permission.", ephemeral=True)
                 return
-            if not self._can_act_on(interaction.user, member, interaction.guild):
-                await interaction.followup.send("❌ Can't act on that member.", ephemeral=True)
+            targets = []
+            if role is not None:
+                targets = [m for m in role.members]
+            elif member is not None:
+                targets = [member]
+            if not targets:
+                await interaction.followup.send("❌ No targets.", ephemeral=True)
                 return
-            ok = await self._apply_kick(member, reason or f"Kicked by {interaction.user}")
-            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+            ok_any = False
+            for t in targets:
+                if not self._can_act_on(interaction.user, t, interaction.guild):
+                    continue
+                ok = await self._apply_kick(t, reason or f"Kicked by {interaction.user}")
+                if ok:
+                    ok_any = True
+            await interaction.followup.send("✅" if ok_any else "❌", ephemeral=True)
 
-        @tree.command(name="ban", description="Ban a member")
-        @app_commands.describe(member="Member to ban", reason="Reason")
+        @tree.command(name="ban", description="Ban a member or all members with a role")
+        @app_commands.describe(member="Member to ban", role="Role: ban all members with this role", reason="Reason")
         @app_commands.default_permissions(ban_members=True)
-        async def slash_ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
+        async def slash_ban(interaction: discord.Interaction, member: discord.Member = None, role: discord.Role = None, reason: str = None):
             await interaction.response.defer(ephemeral=True)
             if not self._can_moderate(interaction.user, 'ban_members'):
                 await interaction.followup.send("❌ You don't have permission.", ephemeral=True)
@@ -1177,11 +1274,22 @@ class AdminCommands:
             if not self._bot_can(interaction.guild, 'ban_members'):
                 await interaction.followup.send("❌ I don't have permission.", ephemeral=True)
                 return
-            if not self._can_act_on(interaction.user, member, interaction.guild):
-                await interaction.followup.send("❌ Can't act on that member.", ephemeral=True)
+            targets = []
+            if role is not None:
+                targets = [m for m in role.members]
+            elif member is not None:
+                targets = [member]
+            if not targets:
+                await interaction.followup.send("❌ No targets.", ephemeral=True)
                 return
-            ok = await self._apply_ban(member, reason or f"Banned by {interaction.user}")
-            await interaction.followup.send("✅" if ok else "❌", ephemeral=True)
+            ok_any = False
+            for t in targets:
+                if not self._can_act_on(interaction.user, t, interaction.guild):
+                    continue
+                ok = await self._apply_ban(t, reason or f"Banned by {interaction.user}")
+                if ok:
+                    ok_any = True
+            await interaction.followup.send("✅" if ok_any else "❌", ephemeral=True)
 
         @tree.command(name="mute", description="Timeout a member")
         @app_commands.describe(member="Member to mute", duration="e.g. 10m, 1h, 1d", reason="Reason")
@@ -1373,16 +1481,18 @@ class AdminCommands:
                 return
             await interaction.followup.send("❌ Unknown action.", ephemeral=True)
 
-        @tree.command(name="sendmsg", description="Send a message as the bot")
+        @tree.command(name="sendemb", description="Send or edit an embed message as the bot")
         @app_commands.describe(
             color="Hex color (000000-FFFFFF, optional #)",
             channel="Target channel ID (default: current)",
-            role_text="Space-separated button labels for role buttons",
+            role_text="Button labels, use \"\" for spaces",
             role_id="Space-separated role IDs matching role_text",
             button_style="primary / secondary / success / danger",
             button_emoji="Emoji for role buttons (optional)",
             pic_url="Image URL (optional)",
             pic_pos="thumbnail or image (default: thumbnail)",
+            edit="Message ID or link to edit",
+            text_only="Edit only the text, keep existing buttons",
         )
         @app_commands.default_permissions(manage_channels=True)
         @app_commands.choices(button_style=[
@@ -1391,7 +1501,7 @@ class AdminCommands:
             app_commands.Choice(name="success", value="success"),
             app_commands.Choice(name="danger", value="danger"),
         ])
-        async def slash_sendmsg(
+        async def slash_sendemb(
             interaction: discord.Interaction,
             color: str = "5865F2",
             channel: str = None,
@@ -1401,6 +1511,8 @@ class AdminCommands:
             button_emoji: str = None,
             pic_url: str = None,
             pic_pos: str = None,
+            edit: str = None,
+            text_only: bool = False,
         ):
             if not self._can_manage_channels(interaction.user):
                 await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
@@ -1409,6 +1521,17 @@ class AdminCommands:
             if parsed_color is None:
                 await interaction.response.send_message("❌ Invalid color. Use 000000-FFFFFF.", ephemeral=True)
                 return
+
+            edit_target = None
+            if edit:
+                edit_target = await self._resolve_edit_target(interaction, edit)
+                if edit_target is None:
+                    await interaction.response.send_message("❌ Could not find message to edit.", ephemeral=True)
+                    return
+                if edit_target.author.id != self.bot.user.id:
+                    await interaction.response.send_message("❌ I can only edit my own messages.", ephemeral=True)
+                    return
+
             target = interaction.channel
             if channel:
                 try:
@@ -1418,15 +1541,17 @@ class AdminCommands:
                 if target is None or not isinstance(target, discord.TextChannel):
                     await interaction.response.send_message("❌ Invalid channel ID.", ephemeral=True)
                     return
+
             style_value = button_style.value if button_style else "primary"
             emoji_value = button_emoji.strip() if button_emoji else None
             pos = (pic_pos or "thumbnail").strip().lower()
             if pos not in ("thumbnail", "image"):
                 await interaction.response.send_message("❌ pic_pos must be 'thumbnail' or 'image'.", ephemeral=True)
                 return
+
             role_labels = []
-            if role_text or role_id:
-                texts = role_text.split() if role_text else []
+            if (role_text or role_id) and not text_only:
+                texts = _split_quoted(role_text) if role_text else []
                 ids = role_id.split() if role_id else []
                 if len(texts) != len(ids):
                     await interaction.response.send_message("❌ role_text and role_id must have the same number of items.", ephemeral=True)
@@ -1461,8 +1586,60 @@ class AdminCommands:
                         await interaction.response.send_message(f"❌ Role {role.name} is managed by an integration.", ephemeral=True)
                         return
                     role_labels.append((role, label))
-            modal = SendMsgModal(parsed_color, target, role_labels, style_value, emoji_value, pic_url, pos)
+
+            modal = SendEmbModal(parsed_color, target, role_labels, style_value, emoji_value, pic_url, pos, edit_target, text_only)
             await interaction.response.send_modal(modal)
+
+        @tree.command(name="sendmsg", description="Send a plain message with text, files, links")
+        @app_commands.describe(
+            channel="Target channel ID (default: current)",
+            text="Message text",
+            files="Attachments",
+            links="Space-separated URLs (images/videos/docs)",
+            anon="Hide your name (requires Manage Messages, Admin or Owner)",
+        )
+        async def slash_sendmsg(
+            interaction: discord.Interaction,
+            channel: str = None,
+            text: str = None,
+            files: discord.Attachment = None,
+            links: str = None,
+            anon: bool = False,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            target = interaction.channel
+            if channel:
+                try:
+                    target = interaction.guild.get_channel(int(channel.strip()))
+                except Exception:
+                    target = None
+                if target is None or not isinstance(target, discord.TextChannel):
+                    await interaction.followup.send("❌ Invalid channel ID.", ephemeral=True)
+                    return
+
+            can_anon = self._can_manage_messages(interaction.user)
+            use_anon = bool(anon) and can_anon
+
+            content = text or ""
+            file_list = []
+            if files is not None:
+                file_list.append(await files.to_file())
+            if links:
+                content = (content + "\n" + links).strip()
+
+            if not content and not file_list:
+                await interaction.followup.send("❌ Nothing to send.", ephemeral=True)
+                return
+
+            if not use_anon:
+                content = (content + f"\nSended by {interaction.user.mention}").strip()
+
+            try:
+                await target.send(content=content or None, files=file_list)
+            except Exception:
+                await interaction.followup.send("❌ Could not send message.", ephemeral=True)
+                return
+            await interaction.followup.send("✅", ephemeral=True)
 
     def _slash_channels(self, interaction, channels_arg):
         if not channels_arg:
@@ -1869,9 +2046,5 @@ class AdminCommands:
                     ok_any = True
             await message.add_reaction('✅' if ok_any else '❌')
             return True
-
-        if normalized.startswith('getreacts'):
-            rest = stripped[stripped.lower().index('getreacts') + len('getreacts'):].strip()
-            return await self._handle_getreacts(message, rest)
 
         return False
